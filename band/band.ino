@@ -14,26 +14,17 @@ Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 BLECharacteristic *gestureCharacteristic;
 bool deviceConnected = false;
 
-// =====================================================
-// GESTURE SETTINGS
-// =====================================================
+#define SAMPLE_INTERVAL 20UL
+#define SEND_INTERVAL 500UL
 
-#define ANGLE_THRESHOLD 25.0
-#define RETURN_THRESHOLD 10.0
-#define GESTURE_DELAY 300
-#define ORIENTATION_INTERVAL 500UL
-#define CHANGE_THRESHOLD 10.0
-#define DOMINANT_MARGIN 5.0
+#define GYRO_THRESHOLD 30.0
+#define GYRO_DOMINANT_MARGIN 20.0
 
-float startHeading;
-float startRoll;
-bool waitingForReturn = false;
-unsigned long lastOrientationSend = 0;
+unsigned long lastSend = 0;
 
-float prevHeading;
-float prevRoll;
-float prevPitch;
-bool hasPrevOrientation = false;
+float peakX = 0.0;
+float peakY = 0.0;
+float peakZ = 0.0;
 
 // =====================================================
 // SETUP
@@ -64,8 +55,6 @@ void setup()
   // NDOF sensor fusion
   bno.setMode((adafruit_bno055_opmode_t)0x0C);
   delay(100);
-  // initial wrist position
-  calibrateStartingPosition();
 
   Serial.println();
   Serial.println("======================================");
@@ -75,246 +64,87 @@ void setup()
 }
 
 // =====================================================
-// GET ORIENTATION
+// GYRO
 // =====================================================
 
-void getOrientation(float &heading, float &roll, float &pitch)
+void readGyro(float &x, float &y, float &z)
 {
-  sensors_event_t event;
-  bno.getEvent(&event, Adafruit_BNO055::VECTOR_EULER);
-  heading = event.orientation.x;
-  roll = event.orientation.y;
-  pitch = event.orientation.z;
+  // degrees per second
+  imu::Vector<3> gyro = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+  x = gyro.x();
+  y = gyro.y();
+  z = gyro.z();
 }
 
-// =====================================================
-// ANGLE DIFFERENCE
-// =====================================================
-
-float angleDifference(float current, float start)
+void notePeak(float &peak, float sample)
 {
-  float difference = current - start;
-
-  if (difference > 180)
-    difference -= 360;
-
-  if (difference < -180)
-    difference += 360;
-
-  return difference;
-}
-
-// =====================================================
-// INITIAL POSITION
-// =====================================================
-
-void calibrateStartingPosition()
-{
-  float pitch;
-  delay(2000);
-  getOrientation(startHeading, startRoll, pitch);
-}
-
-// =====================================================
-// CHECK RETURN TO NORMAL POSITION
-// =====================================================
-
-void checkReturnPosition()
-{
-  float heading;
-  float roll;
-  float pitch;
-
-  getOrientation(heading, roll, pitch);
-
-  float headingChange = angleDifference(heading, startHeading);
-  float rollChange = angleDifference(roll, startRoll);
-
-  if (
-    abs(headingChange) < RETURN_THRESHOLD &&
-    abs(rollChange) < RETURN_THRESHOLD
-  )
+  if (abs(sample) > abs(peak))
   {
-    waitingForReturn = false;
+    peak = sample;
   }
 }
 
-// =====================================================
-// SEND GESTURE
-// =====================================================
-
-void sendGesture(const char *gesture)
+void sendGyro()
 {
-  if (deviceConnected)
-  {
-    // set data
-    gestureCharacteristic->setValue((uint8_t *)gesture, strlen(gesture));
-    // send BLE notification
-    gestureCharacteristic->notify();
+  float x = peakX;
+  float y = peakY;
+  float z = peakZ;
+  peakX = 0.0;
+  peakY = 0.0;
+  peakZ = 0.0;
 
-    Serial.print("COMMAND SENT : ");
-    Serial.println(gesture);
+  // keep only the dominant axis, others are sent as 0
+  float absX = abs(x);
+  float absY = abs(y);
+  float absZ = abs(z);
+
+  float largest = max(absX, max(absY, absZ));
+  float second;
+
+  if (largest == absX)
+    second = max(absY, absZ);
+  else if (largest == absY)
+    second = max(absX, absZ);
+  else
+    second = max(absX, absY);
+
+  // too slow or no clear dominant axis
+  if (largest < GYRO_THRESHOLD || largest - second < GYRO_DOMINANT_MARGIN)
+  {
+    x = 0.0;
+    y = 0.0;
+    z = 0.0;
+  }
+  else if (largest == absX)
+  {
+    y = 0.0;
+    z = 0.0;
+  }
+  else if (largest == absY)
+  {
+    x = 0.0;
+    z = 0.0;
   }
   else
   {
-    Serial.print("BLE NOT CONNECTED - COMMAND : ");
-    Serial.println(gesture);
+    x = 0.0;
+    y = 0.0;
   }
-}
-
-// =====================================================
-// SEND ORIENTATION
-// =====================================================
-
-void sendOrientation()
-{
-  if (millis() - lastOrientationSend < ORIENTATION_INTERVAL)
-  {
-    return;
-  }
-
-  lastOrientationSend = millis();
-
-  float heading;
-  float roll;
-  float pitch;
-  getOrientation(heading, roll, pitch);
-
-  float headingChange = 0.0;
-  float rollChange = 0.0;
-  float pitchChange = 0.0;
-
-  if (hasPrevOrientation)
-  {
-    headingChange = angleDifference(heading, prevHeading);
-    rollChange = angleDifference(roll, prevRoll);
-    pitchChange = angleDifference(pitch, prevPitch);
-  }
-
-  prevHeading = heading;
-  prevRoll = roll;
-  prevPitch = pitch;
-  hasPrevOrientation = true;
 
   if (!deviceConnected)
   {
     return;
   }
 
-  // keep only the dominant axis, others are sent as 0
-  float absHeading = abs(headingChange);
-  float absRoll = abs(rollChange);
-  float absPitch = abs(pitchChange);
-
-  float largest = max(absHeading, max(absRoll, absPitch));
-  float second;
-
-  if (largest == absHeading)
-    second = max(absRoll, absPitch);
-  else if (largest == absRoll)
-    second = max(absHeading, absPitch);
-  else
-    second = max(absHeading, absRoll);
-
-  // too small or no clear dominant axis
-  if (largest < CHANGE_THRESHOLD || largest - second < DOMINANT_MARGIN)
-  {
-    headingChange = 0.0;
-    rollChange = 0.0;
-    pitchChange = 0.0;
-  }
-  else if (largest == absHeading)
-  {
-    rollChange = 0.0;
-    pitchChange = 0.0;
-  }
-  else if (largest == absRoll)
-  {
-    headingChange = 0.0;
-    pitchChange = 0.0;
-  }
-  else
-  {
-    headingChange = 0.0;
-    rollChange = 0.0;
-  }
-
   String message = "O,";
-  message += String(headingChange, 1);
+  message += String(x, 1);
   message += ",";
-  message += String(rollChange, 1);
+  message += String(y, 1);
   message += ",";
-  message += String(pitchChange, 1);
+  message += String(z, 1);
 
   gestureCharacteristic->setValue((uint8_t *)message.c_str(), message.length());
   gestureCharacteristic->notify();
-}
-
-// =====================================================
-// GESTURE DETECTION
-// =====================================================
-
-void detectGesture()
-{
-  float heading;
-  float roll;
-  float pitch;
-
-  getOrientation(heading, roll, pitch);
-
-  float headingChange = angleDifference(heading, startHeading);
-  float rollChange = angleDifference(roll, startRoll);
-
-  // wait for wrist to return
-  if (waitingForReturn)
-  {
-    checkReturnPosition();
-    return;
-  }
-
-  // G1 = left
-  if (headingChange < -ANGLE_THRESHOLD)
-  {
-    sendGesture("G1");
-    gestureDetected();
-    return;
-  }
-
-  // G2 = right
-  if (headingChange > ANGLE_THRESHOLD)
-  {
-    sendGesture("G2");
-    gestureDetected();
-    return;
-  }
-
-  // G3 = down
-  if (rollChange < -ANGLE_THRESHOLD)
-  {
-    sendGesture("G3");
-    gestureDetected();
-    return;
-  }
-
-  // G4 = up
-  if (rollChange > ANGLE_THRESHOLD)
-  {
-    sendGesture("G4");
-    gestureDetected();
-    return;
-  }
-}
-
-// =====================================================
-// GESTURE COMPLETED
-// =====================================================
-
-void gestureDetected()
-{
-  float pitch;
-  delay(GESTURE_DELAY);
-  getOrientation(startHeading, startRoll, pitch);
-  waitingForReturn = true;
 }
 
 // =====================================================
@@ -323,7 +153,19 @@ void gestureDetected()
 
 void loop()
 {
-  //detectGesture();
-  sendOrientation();
-  delay(20);
+  float x;
+  float y;
+  float z;
+  readGyro(x, y, z);
+  notePeak(peakX, x);
+  notePeak(peakY, y);
+  notePeak(peakZ, z);
+
+  if (millis() - lastSend >= SEND_INTERVAL)
+  {
+    lastSend = millis();
+    sendGyro();
+  }
+
+  delay(SAMPLE_INTERVAL);
 }

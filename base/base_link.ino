@@ -1,79 +1,3 @@
-
-/* =========================================================
-   WIFI / DATABASE
-   ========================================================= */
-
-const char* WIFI_SSID = "geNJaspot";
-const char* WIFI_PASSWORD = "12345677";
-const char* SERVER_URL =
-"http://192.168.1.3/arthritis.php";
-
-/* =========================================================
-   WIFI
-   ========================================================= */
-
-void connectWiFi()
-{
-  Serial.println();
-  Serial.println("Connecting to WiFi...");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  unsigned long startTime = millis();
-  while (
-    WiFi.status() != WL_CONNECTED &&
-    millis() - startTime < 10000
-  )
-  {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    Serial.println("WiFi connected");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-  }
-  else
-  {
-    Serial.println("WiFi connection failed");
-  }
-}
-// database upload
-
-void uploadEvent(const char *event, int state)
-{
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.println("WiFi not connected - database upload skipped");
-    return;
-  }
-  HTTPClient http;
-  String url = String(SERVER_URL);
-  url += "?event=";
-  url += event;
-  url += "&state=";
-  url += String(state);
-  Serial.println();
-  Serial.print("Database URL: ");
-  Serial.println(url);
-  http.begin(url);
-  int httpCode = http.GET();
-  if (httpCode > 0)
-  {
-    Serial.print("HTTP Response: ");
-    Serial.println(httpCode);
-    String response = http.getString();
-    Serial.print("Server Response: ");
-    Serial.println(response);
-  }
-  else
-  {
-    Serial.print("HTTP Error: ");
-    Serial.println(http.errorToString(httpCode));
-  }
-  http.end();
-}
-
 /* =========================================================
    BLE
    ========================================================= */
@@ -119,13 +43,7 @@ void notifyCallback(
   {
     receivedOrientation = command;
     newOrientationReceived = true;
-    return;
   }
-
-  Serial.print("BLE Command Received: ");
-  Serial.println(command);
-  receivedCommand = command;
-  newCommandReceived = true;
 }
 
 class ClientCallbacks : public NimBLEClientCallbacks
