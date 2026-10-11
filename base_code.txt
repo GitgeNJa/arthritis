@@ -1,0 +1,1483 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <NimBLEDevice.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+/* =========================================================
+   OLED
+   ========================================================= */
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define OLED_ADDR 0x3C
+
+#define SDA_PIN 21
+#define SCL_PIN 22
+
+Adafruit_SSD1306 display(
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  &Wire,
+  OLED_RESET
+);
+
+
+/* =========================================================
+   ULTRASONIC
+   ========================================================= */
+
+#define TRIG_PIN 5
+#define ECHO_PIN 18
+
+#define MIN_GESTURE_DISTANCE 3.0
+#define MAX_GESTURE_DISTANCE 20.0
+#define TOO_CLOSE_DISTANCE 3.0
+
+
+/* =========================================================
+   OUTPUTS
+   ========================================================= */
+
+#define LED_LIGHT_PIN 25
+#define LED_FAN_PIN   26
+#define LED_HELP_PIN  27
+#define LED_ALERT_PIN 14
+
+
+/* =========================================================
+   TIMING
+   ========================================================= */
+
+#define ULTRASONIC_WARMUP_TIME 5000UL
+#define ULTRASONIC_READ_INTERVAL 150UL
+
+#define REQUIRED_VALID_SAMPLES 2
+
+#define GESTURE_WAIT_TIME 2000UL
+
+#define TOO_CLOSE_ALERT_TIME 5000UL
+#define NO_ECHO_ALERT_TIME 2000UL
+
+#define ALERT_DISPLAY_TIME 5000UL
+#define GESTURE_DISPLAY_TIME 3000UL
+
+
+/* =========================================================
+   BLE
+   ========================================================= */
+
+#define REMOTE_BLE_MAC "14:63:93:C5:CE:32"
+#define REMOTE_BLE_NAME "ARTHRITIS_BAND"
+
+#define SERVICE_UUID \
+"12345678-1234-1234-1234-1234567890AB"
+
+#define CHARACTERISTIC_UUID \
+"87654321-4321-4321-4321-BA0987654321"
+
+
+/* =========================================================
+   WIFI / DATABASE
+   ========================================================= */
+
+const char* WIFI_SSID = "geNJaspot";
+const char* WIFI_PASSWORD = "12345677";
+
+const char* SERVER_URL =
+"http://192.168.1.3/arthritis.php";
+
+
+/* =========================================================
+   BLE VARIABLES
+   ========================================================= */
+
+NimBLEClient *pClient = nullptr;
+NimBLERemoteCharacteristic *pRemoteCharacteristic = nullptr;
+
+bool bleConnected = false;
+
+volatile bool newCommandReceived = false;
+String receivedCommand = "";
+
+#define RECONNECT_INTERVAL 500UL
+
+unsigned long lastReconnectAttempt = 0;
+
+
+/* =========================================================
+   GESTURE SYSTEM
+   ========================================================= */
+
+bool gestureArmed = true;
+
+bool showingGesture = false;
+unsigned long gestureDisplayStart = 0;
+
+bool gestureWindowActive = false;
+unsigned long gestureWindowStart = 0;
+
+
+/* =========================================================
+   ULTRASONIC VARIABLES
+   ========================================================= */
+
+bool ultrasonicReady = false;
+unsigned long ultrasonicWarmupStart = 0;
+
+float currentDistance = 999.0;
+unsigned long lastUltrasonicRead = 0;
+
+int validRangeSamples = 0;
+bool gestureRangeConfirmed = false;
+
+
+/* =========================================================
+   ALERT VARIABLES
+   ========================================================= */
+
+bool tooCloseTiming = false;
+unsigned long tooCloseStartTime = 0;
+bool tooCloseAlertDone = false;
+
+bool noEchoTiming = false;
+unsigned long noEchoStartTime = 0;
+bool noEchoAlertDone = false;
+
+bool alertActive = false;
+unsigned long alertStartTime = 0;
+
+
+/* =========================================================
+   PERSISTENT DEVICE STATES
+   =========================================================
+   
+   These states are independent.
+
+   G1 -> Light
+   G2 -> Fan
+   G3 -> Help
+   G4 -> Not Set
+
+   State remains until the SAME gesture is performed again.
+   ========================================================= */
+
+bool lightState = false;
+bool fanState = false;
+bool helpState = false;
+bool notSetState = false;
+
+
+/* =========================================================
+   APPLY CURRENT DEVICE STATES
+   ========================================================= */
+
+void applyDeviceStates()
+{
+  digitalWrite(
+    LED_LIGHT_PIN,
+    lightState ? HIGH : LOW
+  );
+
+  digitalWrite(
+    LED_FAN_PIN,
+    fanState ? HIGH : LOW
+  );
+
+  digitalWrite(
+    LED_HELP_PIN,
+    helpState ? HIGH : LOW
+  );
+}
+
+
+/* =========================================================
+   TURN OFF ALL GESTURE OUTPUTS
+   =========================================================
+   
+   Used only during initialization if required.
+   Do NOT use this during normal gesture processing,
+   because device states must remain independent.
+   ========================================================= */
+
+void turnOffGestureLEDs()
+{
+  digitalWrite(LED_LIGHT_PIN, LOW);
+  digitalWrite(LED_FAN_PIN, LOW);
+  digitalWrite(LED_HELP_PIN, LOW);
+  digitalWrite(LED_ALERT_PIN, LOW);
+}
+
+
+/* =========================================================
+   WIFI
+   ========================================================= */
+
+void connectWiFi()
+{
+  Serial.println();
+  Serial.println("Connecting to WiFi...");
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  unsigned long startTime = millis();
+
+  while (
+    WiFi.status() != WL_CONNECTED &&
+    millis() - startTime < 10000
+  )
+  {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("WiFi connected");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+  }
+  else
+  {
+    Serial.println("WiFi connection failed");
+  }
+}
+// database upload
+
+void uploadEvent(const char *event, int state)
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("WiFi not connected - database upload skipped");
+    return;
+  }
+
+  HTTPClient http;
+
+  String url = String(SERVER_URL);
+
+  url += "?event=";
+  url += event;
+
+  url += "&state=";
+  url += String(state);
+
+  Serial.println();
+  Serial.print("Database URL: ");
+  Serial.println(url);
+
+  http.begin(url);
+
+  int httpCode = http.GET();
+
+  if (httpCode > 0)
+  {
+    Serial.print("HTTP Response: ");
+    Serial.println(httpCode);
+
+    String response = http.getString();
+
+    Serial.print("Server Response: ");
+    Serial.println(response);
+  }
+  else
+  {
+    Serial.print("HTTP Error: ");
+    Serial.println(http.errorToString(httpCode));
+  }
+
+  http.end();
+}
+/* =========================================================
+   BLE NOTIFICATION CALLBACK
+   ========================================================= */
+
+void notifyCallback(
+  NimBLERemoteCharacteristic *pCharacteristic,
+  uint8_t *pData,
+  size_t length,
+  bool isNotify
+)
+{
+  String command = "";
+
+  for (size_t i = 0; i < length; i++)
+  {
+    command += (char)pData[i];
+  }
+
+  command.trim();
+
+  Serial.print("BLE Command Received: ");
+  Serial.println(command);
+
+  receivedCommand = command;
+  newCommandReceived = true;
+}
+
+
+/* =========================================================
+   BLE CLIENT CALLBACKS
+   ========================================================= */
+
+class ClientCallbacks : public NimBLEClientCallbacks
+{
+  void onConnect(NimBLEClient *pClient)
+  {
+    bleConnected = true;
+
+    Serial.println("BLE connected");
+
+    drawBLEStatus();
+  }
+
+  void onDisconnect(
+    NimBLEClient *pClient,
+    int reason
+  )
+  {
+    bleConnected = false;
+
+    pRemoteCharacteristic = nullptr;
+
+    Serial.println("BLE disconnected");
+
+    drawBLEStatus();
+  }
+};
+
+
+/* =========================================================
+   BLE STATUS ON OLED
+   ========================================================= */
+
+void drawBLEStatus()
+{
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(118, 0);
+
+  if (bleConnected)
+  {
+    display.print("C");
+  }
+  else
+  {
+    display.print("N");
+  }
+}
+
+
+/* =========================================================
+   Waiting
+   ========================================================= */
+
+void showNoAction()
+{
+  display.clearDisplay();
+
+  drawBLEStatus();
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(0, 44);
+
+  display.print("waiting");
+
+  display.display();
+}
+
+
+/* =========================================================
+   SHOW MESSAGE
+   ========================================================= */
+
+void showMessage(const char *message)
+{
+  display.clearDisplay();
+
+  drawBLEStatus();
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(0, 22);
+
+  display.print(message);
+
+  display.display();
+}
+
+
+/* =========================================================
+   ULTRASONIC DISTANCE
+   ========================================================= */
+
+float getDistance()
+{
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+
+  digitalWrite(TRIG_PIN, LOW);
+
+  unsigned long duration =
+    pulseIn(ECHO_PIN, HIGH, 30000);
+
+  if (duration == 0)
+  {
+    return 999.0;
+  }
+
+  float distance =
+    duration * 0.0343 / 2.0;
+
+  return distance;
+}
+
+
+/* =========================================================
+   START ALERT
+   ========================================================= */
+
+void startAlert()
+{
+  alertActive = true;
+  alertStartTime = millis();
+
+  gestureWindowActive = false;
+
+  /*
+     IMPORTANT:
+
+     Do not clear Light/Fan/Help states here.
+
+     Their states must remain persistent.
+
+     Only the independent ALERT LED is turned ON.
+  */
+
+  digitalWrite(LED_ALERT_PIN, HIGH);
+
+  showMessage("ALERT");
+
+  uploadEvent("ALERT", 1);
+
+  Serial.println("ALERT TRIGGERED");
+}
+
+
+/* =========================================================
+   ALERT TIMER
+   ========================================================= */
+
+void handleAlertTimer()
+{
+  if (!alertActive)
+  {
+    return;
+  }
+
+  if (
+    millis() - alertStartTime >=
+    ALERT_DISPLAY_TIME
+  )
+  {
+    alertActive = false;
+
+    digitalWrite(LED_ALERT_PIN, LOW);
+
+    /*
+       Restore persistent device outputs.
+    */
+
+    applyDeviceStates();
+
+    showNoAction();
+
+    Serial.println("Alert finished");
+  }
+}
+
+
+/* =========================================================
+   GESTURE DISPLAY TIMER
+   ========================================================= */
+
+void handleGestureDisplay()
+{
+  if (!showingGesture)
+  {
+    return;
+  }
+
+  if (
+    millis() - gestureDisplayStart >=
+    GESTURE_DISPLAY_TIME
+  )
+  {
+    showingGesture = false;
+
+    /*
+       VERY IMPORTANT:
+
+       Do NOT turn Light/Fan/Help OFF here.
+
+       Their state must remain exactly as selected.
+    */
+
+    applyDeviceStates();
+
+    showNoAction();
+  }
+}
+
+
+/* =========================================================
+   GESTURE WINDOW
+   ========================================================= */
+
+void handleGestureWindow()
+{
+  if (!gestureWindowActive)
+  {
+    return;
+  }
+
+  if (
+    millis() - gestureWindowStart >=
+    GESTURE_WAIT_TIME
+  )
+  {
+    gestureWindowActive = false;
+
+    Serial.println("Gesture window expired");
+
+    showNoAction();
+  }
+}
+
+
+/* =========================================================
+   ULTRASONIC HANDLING
+   ========================================================= */
+
+void handleUltrasonic(float distance)
+{
+  currentDistance = distance;
+
+  /* -------------------------------------------------------
+     NO ECHO
+     ------------------------------------------------------- */
+
+  if (distance >= 900.0)
+  {
+    if (!noEchoTiming)
+    {
+      noEchoTiming = true;
+      noEchoStartTime = millis();
+      noEchoAlertDone = false;
+    }
+
+    if (
+      !noEchoAlertDone &&
+      millis() - noEchoStartTime >=
+      NO_ECHO_ALERT_TIME
+    )
+    {
+      noEchoAlertDone = true;
+      startAlert();
+    }
+
+    return;
+  }
+
+  noEchoTiming = false;
+  noEchoAlertDone = false;
+
+
+  /* -------------------------------------------------------
+     TOO CLOSE
+     ------------------------------------------------------- */
+
+  if (distance < TOO_CLOSE_DISTANCE)
+  {
+    if (!tooCloseTiming)
+    {
+      tooCloseTiming = true;
+      tooCloseStartTime = millis();
+      tooCloseAlertDone = false;
+    }
+
+    if (
+      !tooCloseAlertDone &&
+      millis() - tooCloseStartTime >=
+      TOO_CLOSE_ALERT_TIME
+    )
+    {
+      tooCloseAlertDone = true;
+      startAlert();
+    }
+
+    return;
+  }
+
+  tooCloseTiming = false;
+  tooCloseAlertDone = false;
+
+
+  /* -------------------------------------------------------
+     VALID GESTURE RANGE
+     ------------------------------------------------------- */
+
+  if (
+    distance >= MIN_GESTURE_DISTANCE &&
+    distance <= MAX_GESTURE_DISTANCE
+  )
+  {
+    if (
+      gestureArmed &&
+      !showingGesture &&
+      !gestureWindowActive &&
+      !alertActive
+    )
+    {
+      validRangeSamples++;
+
+      if (
+        validRangeSamples >=
+        REQUIRED_VALID_SAMPLES
+      )
+      {
+        validRangeSamples = 0;
+
+        gestureRangeConfirmed = true;
+
+        gestureWindowActive = true;
+
+        gestureWindowStart = millis();
+
+        Serial.println("Gesture window OPEN");
+
+        Serial.println(
+          "Waiting for BLE gesture..."
+        );
+      }
+    }
+  }
+  else
+  {
+    validRangeSamples = 0;
+  }
+
+
+  /* -------------------------------------------------------
+     HAND REMOVED
+     ------------------------------------------------------- */
+
+  if (distance > MAX_GESTURE_DISTANCE)
+  {
+    validRangeSamples = 0;
+
+    gestureRangeConfirmed = false;
+
+    gestureWindowActive = false;
+
+    if (!gestureArmed)
+    {
+      gestureArmed = true;
+
+      Serial.println(
+        "GESTURE SYSTEM RE-ARMED"
+      );
+    }
+  }
+}
+
+
+/* =========================================================
+   PROCESS GESTURE COMMAND
+   ========================================================= */
+
+void processCommand(String command)
+{
+  command.trim();
+  command.toUpperCase();
+
+  Serial.println();
+  Serial.print("Processing gesture: ");
+  Serial.println(command);
+
+
+  /* -------------------------------------------------------
+     BASIC VALIDATION
+     ------------------------------------------------------- */
+
+  if (alertActive)
+  {
+    Serial.println(
+      "Ignored: Alert active"
+    );
+
+    return;
+  }
+
+  if (!gestureWindowActive)
+  {
+    Serial.println(
+      "Ignored: Gesture window inactive"
+    );
+
+    return;
+  }
+
+  if (
+    command != "G1" &&
+    command != "G2" &&
+    command != "G3" &&
+    command != "G4"
+  )
+  {
+    Serial.println(
+      "Unknown gesture"
+    );
+
+    return;
+  }
+
+
+  /* -------------------------------------------------------
+     G1 = LIGHT TOGGLE
+     ------------------------------------------------------- */
+
+  if (command == "G1")
+  {
+    gestureWindowActive = false;
+
+    gestureArmed = false;
+
+    /*
+       TOGGLE ONLY LIGHT.
+
+       If OFF -> ON
+       If ON  -> OFF
+    */
+
+    lightState = !lightState;
+
+    digitalWrite(
+      LED_LIGHT_PIN,
+      lightState ? HIGH : LOW
+    );
+
+    if (lightState)
+    {
+      showMessage("LIGHTS ON");
+
+      uploadEvent("LIGHT", 1);
+
+      Serial.println("LIGHT = ON");
+    }
+    else
+    {
+      showMessage("LIGHTS OFF");
+
+      uploadEvent("LIGHT", 0);
+
+      Serial.println("LIGHT = OFF");
+    }
+
+    showingGesture = true;
+
+    gestureDisplayStart = millis();
+
+    return;
+  }
+
+
+  /* -------------------------------------------------------
+     G2 = FAN TOGGLE
+     ------------------------------------------------------- */
+
+  if (command == "G2")
+  {
+    gestureWindowActive = false;
+
+    gestureArmed = false;
+
+    /*
+       TOGGLE ONLY FAN.
+    */
+
+    fanState = !fanState;
+
+    digitalWrite(
+      LED_FAN_PIN,
+      fanState ? HIGH : LOW
+    );
+
+    if (fanState)
+    {
+      showMessage("FAN ON");
+
+      uploadEvent("FAN", 1);
+
+      Serial.println("FAN = ON");
+    }
+    else
+    {
+      showMessage("FAN OFF");
+
+      uploadEvent("FAN", 0);
+
+      Serial.println("FAN = OFF");
+    }
+
+    showingGesture = true;
+
+    gestureDisplayStart = millis();
+
+    return;
+  }
+
+
+  /* -------------------------------------------------------
+     G3 = HELP TOGGLE
+     ------------------------------------------------------- */
+
+  if (command == "G3")
+  {
+    gestureWindowActive = false;
+
+    gestureArmed = false;
+
+    /*
+       TOGGLE ONLY HELP.
+    */
+
+    helpState = !helpState;
+
+    digitalWrite(
+      LED_HELP_PIN,
+      helpState ? HIGH : LOW
+    );
+
+    if (helpState)
+    {
+      showMessage("NEED HELP");
+
+      uploadEvent("HELP", 1);
+
+      Serial.println("HELP = ON");
+    }
+    else
+    {
+      showMessage("HELP OFF");
+
+      uploadEvent("HELP", 0);
+
+      Serial.println("HELP = OFF");
+    }
+
+    showingGesture = true;
+
+    gestureDisplayStart = millis();
+
+    return;
+  }
+
+
+  /* -------------------------------------------------------
+     G4 = NOT SET TOGGLE
+     ------------------------------------------------------- */
+
+  if (command == "G4")
+  {
+    gestureWindowActive = false;
+
+    gestureArmed = false;
+
+    /*
+       G4 has NO physical LED.
+
+       State exists only in software/database.
+    */
+
+    notSetState = !notSetState;
+
+    if (notSetState)
+    {
+      showMessage("NOT SET ON");
+
+      uploadEvent("NOT_SET", 1);
+
+      Serial.println("NOT_SET = ON");
+    }
+    else
+    {
+      showMessage("NOT SET OFF");
+
+      uploadEvent("NOT_SET", 0);
+
+      Serial.println("NOT_SET = OFF");
+    }
+
+    showingGesture = true;
+
+    gestureDisplayStart = millis();
+
+    return;
+  }
+}
+
+
+/* =========================================================
+   ULTRASONIC UPDATE
+   ========================================================= */
+
+void updateUltrasonic()
+{
+  if (!ultrasonicReady)
+  {
+    if (
+      millis() - ultrasonicWarmupStart >=
+      ULTRASONIC_WARMUP_TIME
+    )
+    {
+      ultrasonicReady = true;
+
+      Serial.println(
+        "Ultrasonic ready"
+      );
+    }
+    else
+    {
+      return;
+    }
+  }
+
+  if (
+    millis() - lastUltrasonicRead >=
+    ULTRASONIC_READ_INTERVAL
+  )
+  {
+    lastUltrasonicRead = millis();
+
+    float distance = getDistance();
+
+    handleUltrasonic(distance);
+  }
+}
+
+
+/* =========================================================
+   BLUETOOTH CHECK
+   ========================================================= */
+
+void checkBluetooth()
+{
+  if (bleConnected)
+  {
+    return;
+  }
+
+  if (
+    millis() - lastReconnectAttempt >=
+    RECONNECT_INTERVAL
+  )
+  {
+    lastReconnectAttempt = millis();
+
+    connectToBand();
+  }
+}
+
+
+/* =========================================================
+   CONNECT TO BAND
+   =========================================================
+   
+   SAME CONNECTION METHOD AS YOUR WORKING CODE.
+   ========================================================= */
+
+bool connectToBand()
+{
+  Serial.println();
+  Serial.println(
+    "Scanning for ARTHRITIS_BAND..."
+  );
+
+  NimBLEScan *pScan =
+    NimBLEDevice::getScan();
+
+  pScan->clearResults();
+
+  pScan->setActiveScan(true);
+
+  pScan->setInterval(45);
+
+  pScan->setWindow(40);
+
+  NimBLEScanResults scanResults =
+    pScan->getResults(1000);
+
+  const NimBLEAdvertisedDevice *foundDevice =
+    nullptr;
+
+
+  /* -------------------------------------------------------
+     SEARCH BY MAC
+     ------------------------------------------------------- */
+
+  for (
+    int i = 0;
+    i < scanResults.getCount();
+    i++
+  )
+  {
+    const NimBLEAdvertisedDevice *device =
+      scanResults.getDevice(i);
+
+    String address =
+      device->getAddress().toString().c_str();
+
+    address.toUpperCase();
+
+    if (address == REMOTE_BLE_MAC)
+    {
+      foundDevice = device;
+
+      Serial.println(
+        "Found by MAC"
+      );
+
+      break;
+    }
+  }
+
+
+  /* -------------------------------------------------------
+     SEARCH BY NAME
+     ------------------------------------------------------- */
+
+  if (foundDevice == nullptr)
+  {
+    for (
+      int i = 0;
+      i < scanResults.getCount();
+      i++
+    )
+    {
+      const NimBLEAdvertisedDevice *device =
+        scanResults.getDevice(i);
+
+      if (device->haveName())
+      {
+        String name =
+          device->getName().c_str();
+
+        if (name == REMOTE_BLE_NAME)
+        {
+          foundDevice = device;
+
+          Serial.println(
+            "Found by NAME"
+          );
+
+          break;
+        }
+      }
+    }
+  }
+
+
+  /* -------------------------------------------------------
+     BAND NOT FOUND
+     ------------------------------------------------------- */
+
+  if (foundDevice == nullptr)
+  {
+    Serial.println(
+      "Band not found"
+    );
+
+    drawBLEStatus();
+
+    return false;
+  }
+
+
+  /* -------------------------------------------------------
+     CREATE CLIENT
+     ------------------------------------------------------- */
+
+  if (pClient == nullptr)
+  {
+    pClient =
+      NimBLEDevice::createClient();
+
+    pClient->setClientCallbacks(
+      new ClientCallbacks(),
+      false
+    );
+
+    pClient->setConnectionParams(
+      6,
+      6,
+      0,
+      60
+    );
+
+    pClient->setConnectTimeout(5);
+  }
+
+
+  /* -------------------------------------------------------
+     CONNECT
+     ------------------------------------------------------- */
+
+  if (!pClient->connect(foundDevice))
+  {
+    Serial.println(
+      "BLE connection failed"
+    );
+
+    bleConnected = false;
+
+    return false;
+  }
+
+
+  /* -------------------------------------------------------
+     SERVICE
+     ------------------------------------------------------- */
+
+  NimBLERemoteService *pService =
+    pClient->getService(SERVICE_UUID);
+
+  if (pService == nullptr)
+  {
+    Serial.println(
+      "Service not found"
+    );
+
+    pClient->disconnect();
+
+    return false;
+  }
+
+
+  /* -------------------------------------------------------
+     CHARACTERISTIC
+     ------------------------------------------------------- */
+
+  pRemoteCharacteristic =
+    pService->getCharacteristic(
+      CHARACTERISTIC_UUID
+    );
+
+  if (pRemoteCharacteristic == nullptr)
+  {
+    Serial.println(
+      "Characteristic not found"
+    );
+
+    pClient->disconnect();
+
+    return false;
+  }
+
+
+  /* -------------------------------------------------------
+     SUBSCRIBE
+     ------------------------------------------------------- */
+
+  if (
+    pRemoteCharacteristic->canNotify()
+  )
+  {
+    if (
+      !pRemoteCharacteristic->subscribe(
+        true,
+        notifyCallback
+      )
+    )
+    {
+      Serial.println(
+        "Subscribe failed"
+      );
+
+      pClient->disconnect();
+
+      return false;
+    }
+  }
+  else
+  {
+    Serial.println(
+      "Characteristic cannot notify"
+    );
+
+    pClient->disconnect();
+
+    return false;
+  }
+
+
+  /* -------------------------------------------------------
+     SUCCESS
+     ------------------------------------------------------- */
+
+  bleConnected = true;
+
+  drawBLEStatus();
+
+  display.display();
+
+  Serial.println(
+    "BLE connection successful"
+  );
+
+  return true;
+}
+
+
+/* =========================================================
+   SETUP
+   ========================================================= */
+
+void setup()
+{
+  Serial.begin(115200);
+
+  delay(500);
+
+  Serial.println();
+  Serial.println(
+    "================================"
+  );
+  Serial.println(
+    " ARTHRITIS RECEIVER"
+  );
+  Serial.println(
+    "================================"
+  );
+
+
+  /* -------------------------------------------------------
+     I2C
+     ------------------------------------------------------- */
+
+  Wire.begin(
+    SDA_PIN,
+    SCL_PIN
+  );
+
+
+  /* -------------------------------------------------------
+     OLED
+     ------------------------------------------------------- */
+
+  if (
+    !display.begin(
+      SSD1306_SWITCHCAPVCC,
+      OLED_ADDR
+    )
+  )
+  {
+    Serial.println(
+      "OLED initialization failed"
+    );
+  }
+
+  display.clearDisplay();
+
+  display.setTextColor(
+    SSD1306_WHITE
+  );
+
+  display.setTextSize(1);
+
+  display.setCursor(0, 22);
+
+  display.print("NO ACTION");
+
+  drawBLEStatus();
+
+  display.display();
+
+
+  /* -------------------------------------------------------
+     ULTRASONIC
+     ------------------------------------------------------- */
+
+  pinMode(
+    TRIG_PIN,
+    OUTPUT
+  );
+
+  pinMode(
+    ECHO_PIN,
+    INPUT
+  );
+
+
+  /* -------------------------------------------------------
+     LED OUTPUTS
+     ------------------------------------------------------- */
+
+  pinMode(
+    LED_LIGHT_PIN,
+    OUTPUT
+  );
+
+  pinMode(
+    LED_FAN_PIN,
+    OUTPUT
+  );
+
+  pinMode(
+    LED_HELP_PIN,
+    OUTPUT
+  );
+
+  pinMode(
+    LED_ALERT_PIN,
+    OUTPUT
+  );
+
+
+  /* -------------------------------------------------------
+     INITIAL OUTPUT STATE
+     ------------------------------------------------------- */
+
+  lightState = false;
+  fanState = false;
+  helpState = false;
+  notSetState = false;
+
+  turnOffGestureLEDs();
+
+
+  /* -------------------------------------------------------
+     ULTRASONIC WARMUP
+     ------------------------------------------------------- */
+
+  ultrasonicWarmupStart = millis();
+
+
+  /* -------------------------------------------------------
+     BLE
+     ------------------------------------------------------- */
+
+  NimBLEDevice::init(
+    "ARTHRITIS_RECEIVER"
+  );
+
+
+  /* -------------------------------------------------------
+     WIFI
+     ------------------------------------------------------- */
+
+  connectWiFi();
+
+  delay(500);
+
+
+  /* -------------------------------------------------------
+     CONNECT TO BAND
+     ------------------------------------------------------- */
+
+  connectToBand();
+}
+
+
+/* =========================================================
+   LOOP
+   ========================================================= */
+
+void loop()
+{
+  /* -------------------------------------------------------
+     BLE
+     ------------------------------------------------------- */
+
+  checkBluetooth();
+
+
+  /* -------------------------------------------------------
+     WIFI RECONNECT
+     ------------------------------------------------------- */
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    connectWiFi();
+  }
+
+
+  /* -------------------------------------------------------
+     ULTRASONIC
+     ------------------------------------------------------- */
+
+  updateUltrasonic();
+
+
+  /* -------------------------------------------------------
+     GESTURE WINDOW
+     ------------------------------------------------------- */
+
+  handleGestureWindow();
+
+
+  /* -------------------------------------------------------
+     ALERT TIMER
+     ------------------------------------------------------- */
+
+  handleAlertTimer();
+
+
+  /* -------------------------------------------------------
+     GESTURE DISPLAY TIMER
+     ------------------------------------------------------- */
+
+  handleGestureDisplay();
+
+
+  /* -------------------------------------------------------
+     PROCESS BLE COMMAND
+     ------------------------------------------------------- */
+
+  if (newCommandReceived)
+  {
+    noInterrupts();
+
+    String command =
+      receivedCommand;
+
+    newCommandReceived = false;
+
+    interrupts();
+
+    processCommand(command);
+  }
+
+
+  /* -------------------------------------------------------
+     BLE STATUS
+     ------------------------------------------------------- */
+
+  drawBLEStatus();
+
+  display.display();
+
+
+  delay(20);
+}

@@ -1,0 +1,451 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#define SD_PIN 8
+#define SC_PIN 9
+
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
+
+// =====================================================
+// BLE SETTINGS
+// =====================================================
+
+#define BLUETOOTH_NAME "ARTHRITIS_BAND"
+
+#define SERVICE_UUID \
+"12345678-1234-1234-1234-1234567890AB"
+
+#define CHARACTERISTIC_UUID \
+"87654321-4321-4321-4321-BA0987654321"
+
+BLECharacteristic *gestureCharacteristic;
+
+bool deviceConnected = false;
+
+// =====================================================
+// GESTURE SETTINGS
+// =====================================================
+
+#define ANGLE_THRESHOLD 25.0
+#define RETURN_THRESHOLD 10.0
+#define GESTURE_DELAY 300
+
+float startRoll;
+float startPitch;
+
+bool waitingForReturn = false;
+
+// =====================================================
+// BLE SERVER CALLBACKS
+// =====================================================
+
+class MyServerCallbacks : public BLEServerCallbacks
+{
+  void onConnect(BLEServer *pServer)
+  {
+    deviceConnected = true;
+
+    Serial.println();
+    Serial.println("======================================");
+    Serial.println(" BLE CONNECTED");
+    Serial.println("======================================");
+  }
+
+  void onDisconnect(BLEServer *pServer)
+  {
+    deviceConnected = false;
+
+    Serial.println();
+    Serial.println("BLE DISCONNECTED");
+    Serial.println("Restarting advertising...");
+
+    delay(100);
+
+    pServer->startAdvertising();
+  }
+};
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup()
+{
+  Serial.begin(115200);
+
+  // ---------------------------------------------------
+  // I2C
+  // ---------------------------------------------------
+
+  Wire.begin(SD_PIN, SC_PIN);
+
+  // ---------------------------------------------------
+  // BLE
+  // ---------------------------------------------------
+
+  BLEDevice::init(BLUETOOTH_NAME);
+
+  // Print actual BLE MAC
+  Serial.print("Actual BLE MAC: ");
+  Serial.println(
+    BLEDevice::getAddress().toString().c_str()
+  );
+
+  // Create BLE server
+  BLEServer *pServer =
+    BLEDevice::createServer();
+
+  pServer->setCallbacks(
+    new MyServerCallbacks()
+  );
+
+  // ---------------------------------------------------
+  // BLE SERVICE
+  // ---------------------------------------------------
+
+  BLEService *pService =
+    pServer->createService(
+      SERVICE_UUID
+    );
+
+  // ---------------------------------------------------
+  // BLE CHARACTERISTIC
+  // ---------------------------------------------------
+
+  gestureCharacteristic =
+    pService->createCharacteristic(
+      CHARACTERISTIC_UUID,
+
+      BLECharacteristic::PROPERTY_READ |
+      BLECharacteristic::PROPERTY_NOTIFY
+    );
+
+  // Enable notifications
+  gestureCharacteristic->addDescriptor(
+    new BLE2902()
+  );
+
+  // ---------------------------------------------------
+  // START SERVICE
+  // ---------------------------------------------------
+
+  pService->start();
+
+  // ---------------------------------------------------
+  // BLE ADVERTISING
+  // ---------------------------------------------------
+
+  BLEAdvertising *pAdvertising =
+    BLEDevice::getAdvertising();
+
+  pAdvertising->addServiceUUID(
+    SERVICE_UUID
+  );
+
+  pAdvertising->setScanResponse(true);
+
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMinPreferred(0x12);
+
+  BLEDevice::startAdvertising();
+
+  // ---------------------------------------------------
+  // STARTUP INFORMATION
+  // ---------------------------------------------------
+
+  Serial.println();
+  Serial.println("======================================");
+  Serial.println(" ARTHRITIS WRIST BAND");
+  Serial.println(" BLE TRANSMITTER");
+  Serial.println("======================================");
+
+  Serial.print("BLE Name : ");
+  Serial.println(BLUETOOTH_NAME);
+
+  Serial.print("Service UUID : ");
+  Serial.println(SERVICE_UUID);
+
+  Serial.print("Characteristic UUID : ");
+  Serial.println(CHARACTERISTIC_UUID);
+
+  Serial.println();
+  Serial.println("Waiting for BLE connection...");
+
+  // ---------------------------------------------------
+  // BNO055
+  // ---------------------------------------------------
+
+  if (!bno.begin())
+  {
+    Serial.println("BNO055 NOT FOUND!");
+
+    while (1)
+    {
+      delay(1000);
+    }
+  }
+
+  delay(1000);
+
+  // External crystal
+  bno.setExtCrystalUse(true);
+
+  // NDOF = 9-DOF internal sensor fusion
+  bno.setMode(
+    (adafruit_bno055_opmode_t)0x0C
+  );
+
+  delay(100);
+
+  // Get initial wrist position
+  calibrateStartingPosition();
+
+  Serial.println();
+  Serial.println("======================================");
+  Serial.println(" SYSTEM READY");
+  Serial.println("======================================");
+  Serial.println();
+}
+
+// =====================================================
+// GET ORIENTATION
+// =====================================================
+
+void getOrientation(
+  float &roll,
+  float &pitch
+)
+{
+  sensors_event_t event;
+
+  bno.getEvent(
+    &event,
+    Adafruit_BNO055::VECTOR_EULER
+  );
+
+  roll = event.orientation.x;
+  pitch =event.orientation.y;
+}
+
+// =====================================================
+// ANGLE DIFFERENCE
+// =====================================================
+
+float angleDifference(
+  float current,
+  float start
+)
+{
+  float difference =
+    current - start;
+
+  if (difference > 180)
+    difference -= 360;
+
+  if (difference < -180)
+    difference += 360;
+
+  return difference;
+}
+
+// =====================================================
+// INITIAL POSITION
+// =====================================================
+
+void calibrateStartingPosition()
+{
+  delay(2000);
+
+  getOrientation(
+    startRoll,
+    startPitch
+  );
+}
+
+// =====================================================
+// CHECK RETURN TO NORMAL POSITION
+// =====================================================
+
+void checkReturnPosition()
+{
+  float roll;
+  float pitch;
+
+  getOrientation(
+    roll,
+    pitch
+  );
+
+  float rollChange =
+    angleDifference(
+      roll,
+      startRoll
+    );
+
+  float pitchChange =
+    angleDifference(
+      pitch,
+      startPitch
+    );
+
+  if (
+    abs(rollChange) < RETURN_THRESHOLD &&
+    abs(pitchChange) < RETURN_THRESHOLD
+  )
+  {
+    waitingForReturn = false;
+  }
+}
+
+// =====================================================
+// SEND GESTURE
+// =====================================================
+
+void sendGesture(
+  const char *gesture
+)
+{
+  if (deviceConnected)
+  {
+    // Set data
+    gestureCharacteristic->setValue(
+      (uint8_t *)gesture,
+      strlen(gesture)
+    );
+
+    // Send BLE notification
+    gestureCharacteristic->notify();
+
+    Serial.print("COMMAND SENT : ");
+    Serial.println(gesture);
+  }
+  else
+  {
+    Serial.print(
+      "BLE NOT CONNECTED - COMMAND : "
+    );
+
+    Serial.println(gesture);
+  }
+}
+
+// =====================================================
+// GESTURE DETECTION
+// =====================================================
+
+void detectGesture()
+{
+  float roll;
+  float pitch;
+
+  getOrientation(
+    roll,
+    pitch
+  );
+
+  float rollChange =
+    angleDifference(
+      roll,
+      startRoll
+    );
+
+  float pitchChange =
+    angleDifference(
+      pitch,
+      startPitch
+    );
+
+  // ---------------------------------------------------
+  // WAIT FOR WRIST TO RETURN
+  // ---------------------------------------------------
+
+  if (waitingForReturn)
+  {
+    checkReturnPosition();
+    return;
+  }
+
+  // ===================================================
+  // GESTURE 1 - LEFT
+  // ===================================================
+
+  if (rollChange < -ANGLE_THRESHOLD)
+  {
+    sendGesture("G1");
+
+    gestureDetected();
+
+    return;
+  }
+
+  // ===================================================
+  // GESTURE 2 - RIGHT
+  // ===================================================
+
+  if (rollChange > ANGLE_THRESHOLD)
+  {
+    sendGesture("G2");
+
+    gestureDetected();
+
+    return;
+  }
+
+  // ===================================================
+  // GESTURE 3 - UP
+  // ===================================================
+
+  if (pitchChange > ANGLE_THRESHOLD)
+  {
+    sendGesture("G4");
+
+    gestureDetected();
+
+    return;
+  }
+
+  // ===================================================
+  // GESTURE 4 - DOWN
+  // ===================================================
+
+  if (pitchChange < -ANGLE_THRESHOLD)
+  {
+    sendGesture("G3");
+
+    gestureDetected();
+
+    return;
+  }
+}
+
+// =====================================================
+// GESTURE COMPLETED
+// =====================================================
+
+void gestureDetected()
+{
+  delay(GESTURE_DELAY);
+
+  getOrientation(
+    startRoll,
+    startPitch
+  );
+
+  waitingForReturn = true;
+}
+
+// =====================================================
+// LOOP
+// =====================================================
+
+void loop()
+{
+  detectGesture();
+
+  delay(20);
+}
