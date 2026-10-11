@@ -137,9 +137,9 @@ bool hasOrientation = false;
 
 void applyDeviceStates()
 {
-  digitalWrite(LED_LIGHT_PIN, lightState ? HIGH : LOW);
-  digitalWrite(LED_FAN_PIN, fanState ? HIGH : LOW);
-  digitalWrite(LED_HELP_PIN, helpState ? HIGH : LOW);
+  // digitalWrite(LED_LIGHT_PIN, lightState ? HIGH : LOW);
+  // digitalWrite(LED_FAN_PIN, fanState ? HIGH : LOW);
+  // digitalWrite(LED_HELP_PIN, helpState ? HIGH : LOW);
 }
 
 void turnOffGestureLEDs()
@@ -208,6 +208,10 @@ void processOrientation(String data)
   orientY = data.substring(second + 1, third).toFloat();
   orientZ = data.substring(third + 1).toFloat();
   hasOrientation = true;
+
+  digitalWrite(LED_LIGHT_PIN, orientX != 0.0 ? HIGH : LOW);
+  digitalWrite(LED_FAN_PIN, orientY != 0.0 ? HIGH : LOW);
+  digitalWrite(LED_HELP_PIN, orientZ != 0.0 ? HIGH : LOW);
 
   if (!alertActive && !showingGesture)
   {
@@ -479,7 +483,7 @@ void processCommand(String command)
     gestureWindowActive = false;
     gestureArmed = false;
     lightState = !lightState;
-    digitalWrite(LED_LIGHT_PIN, lightState ? HIGH : LOW);
+    //digitalWrite(LED_LIGHT_PIN, lightState ? HIGH : LOW);
     if (lightState)
     {
       showMessage("LIGHTS ON");
@@ -503,7 +507,7 @@ void processCommand(String command)
     gestureWindowActive = false;
     gestureArmed = false;
     fanState = !fanState;
-    digitalWrite(LED_FAN_PIN, fanState ? HIGH : LOW);
+    //digitalWrite(LED_FAN_PIN, fanState ? HIGH : LOW);
     if (fanState)
     {
       showMessage("FAN ON");
@@ -527,7 +531,7 @@ void processCommand(String command)
     gestureWindowActive = false;
     gestureArmed = false;
     helpState = !helpState;
-    digitalWrite(LED_HELP_PIN, helpState ? HIGH : LOW);
+    //digitalWrite(LED_HELP_PIN, helpState ? HIGH : LOW);
     if (helpState)
     {
       showMessage("NEED HELP");

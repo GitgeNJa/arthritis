@@ -323,7 +323,7 @@ void gestureDetected()
 
 void loop()
 {
-  detectGesture();
+  //detectGesture();
   sendOrientation();
   delay(20);
 }
