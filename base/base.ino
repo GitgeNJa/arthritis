@@ -29,26 +29,19 @@ Adafruit_SSD1306 display(
 #define LED_FAN_PIN   26
 #define LED_HELP_PIN  27
 
+#define NO_ACTION_TIMEOUT 1000UL
+
 /* =========================================================
-   ORIENTATION
+   COMMAND
    ========================================================= */
 
 bool bleConnected = false;
 
-volatile bool newOrientationReceived = false;
-String receivedOrientation = "";
-
-volatile bool newGravityReceived = false;
-String receivedGravity = "";
-
-float orientX = 0.0;
-float orientY = 0.0;
-float orientZ = 0.0;
-bool hasOrientation = false;
-
-float gravX = 0.0;
-float gravY = 0.0;
-float gravZ = 0.0;
+volatile bool newCommandReceived = false;
+String receivedCommand = "";
+String gestureLabel = "";
+unsigned long lastCommandMillis = 0;
+bool showingGesture = false;
 
 void turnOffGestureLEDs()
 {
@@ -78,76 +71,69 @@ void showNoAction()
   drawBLEStatus();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setTextWrap(false);
-  display.setCursor(0, 44);
-  if (hasOrientation)
-  {
-    display.print("X:");
-    display.print(orientX, 1);
-    display.print(" Y:");
-    display.print(orientY, 1);
-    display.print(" Z:");
-    display.print(orientZ, 1);
-  }
-  else
-  {
-    display.print("waiting");
-  }
+  display.setCursor(0, 22);
+  display.print("NO ACTION");
   display.display();
 }
 
-void processOrientation(String data)
+void showGesture()
 {
-  int first = data.indexOf(',');
-  int second = data.indexOf(',', first + 1);
-  int third = data.indexOf(',', second + 1);
-
-  if (first < 0 || second < 0 || third < 0)
-  {
-    return;
-  }
-
-  orientX = data.substring(first + 1, second).toFloat();
-  orientY = data.substring(second + 1, third).toFloat();
-  orientZ = data.substring(third + 1).toFloat();
-  hasOrientation = true;
-
-  // X, Y, Z motion on LED1, LED2, and LED3
-  digitalWrite(LED_LIGHT_PIN, orientX != 0.0 ? HIGH : LOW);
-  digitalWrite(LED_FAN_PIN, orientY != 0.0 ? HIGH : LOW);
-  digitalWrite(LED_HELP_PIN, orientZ != 0.0 ? HIGH : LOW);
-
-  Serial.print("GYRO    X:");
-  Serial.print(orientX, 1);
-  Serial.print(" Y:");
-  Serial.print(orientY, 1);
-  Serial.print(" Z:");
-  Serial.println(orientZ, 1);
-
-  showNoAction();
+  display.clearDisplay();
+  drawBLEStatus();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 44);
+  display.print(gestureLabel);
+  display.display();
 }
 
-void processGravity(String data)
+void processCommand(String command)
 {
-  int first = data.indexOf(',');
-  int second = data.indexOf(',', first + 1);
-  int third = data.indexOf(',', second + 1);
+  bool ledX = false;
+  bool ledY = false;
+  bool ledZ = false;
 
-  if (first < 0 || second < 0 || third < 0)
+  if (command == "G1")
+  {
+    gestureLabel = "wave up";
+    ledX = true;
+  }
+  else if (command == "G2")
+  {
+    gestureLabel = "wave down";
+    ledX = true;
+  }
+  else if (command == "G3")
+  {
+    gestureLabel = "twist right";
+    ledY = true;
+  }
+  else if (command == "G4")
+  {
+    gestureLabel = "twist left";
+    ledY = true;
+  }
+  else if (command == "G5")
+  {
+    gestureLabel = "sweep right";
+    ledZ = true;
+  }
+  else if (command == "G6")
+  {
+    gestureLabel = "sweep left";
+    ledZ = true;
+  }
+  else
   {
     return;
   }
 
-  gravX = data.substring(first + 1, second).toFloat();
-  gravY = data.substring(second + 1, third).toFloat();
-  gravZ = data.substring(third + 1).toFloat();
-
-  Serial.print("GRAVITY X:");
-  Serial.print(gravX, 1);
-  Serial.print(" Y:");
-  Serial.print(gravY, 1);
-  Serial.print(" Z:");
-  Serial.println(gravZ, 1);
+  digitalWrite(LED_LIGHT_PIN, ledX ? HIGH : LOW);
+  digitalWrite(LED_FAN_PIN, ledY ? HIGH : LOW);
+  digitalWrite(LED_HELP_PIN, ledZ ? HIGH : LOW);
+  lastCommandMillis = millis();
+  showingGesture = true;
+  showGesture();
 }
 
 /* =========================================================
@@ -176,13 +162,7 @@ void setup()
   {
     Serial.println("OLED initialization failed");
   }
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
-  display.setCursor(0, 22);
-  display.print("NO ACTION");
-  drawBLEStatus();
-  display.display();
+  showNoAction();
 
   // led outputs
   pinMode(LED_LIGHT_PIN, OUTPUT);
@@ -206,22 +186,23 @@ void loop()
   // BLE
   checkBluetooth();
 
-  if (newOrientationReceived)
+  if (newCommandReceived)
   {
     noInterrupts();
-    String data = receivedOrientation;
-    newOrientationReceived = false;
+    String command = receivedCommand;
+    newCommandReceived = false;
     interrupts();
-    processOrientation(data);
+    processCommand(command);
   }
 
-  if (newGravityReceived)
+  if (
+    showingGesture &&
+    millis() - lastCommandMillis >= NO_ACTION_TIMEOUT
+  )
   {
-    noInterrupts();
-    String data = receivedGravity;
-    newGravityReceived = false;
-    interrupts();
-    processGravity(data);
+    showingGesture = false;
+    turnOffGestureLEDs();
+    showNoAction();
   }
 
   // BLE status
