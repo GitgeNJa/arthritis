@@ -43,6 +43,13 @@ void notifyCallback(
   {
     receivedOrientation = command;
     newOrientationReceived = true;
+    return;
+  }
+
+  if (command.startsWith("G,"))
+  {
+    receivedGravity = command;
+    newGravityReceived = true;
   }
 }
 

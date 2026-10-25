@@ -16,7 +16,6 @@ bool deviceConnected = false;
 
 #define SAMPLE_INTERVAL 20UL
 #define SEND_INTERVAL 500UL
-
 #define GYRO_THRESHOLD 30.0
 #define GYRO_DOMINANT_MARGIN 20.0
 
@@ -25,6 +24,11 @@ unsigned long lastSend = 0;
 float peakX = 0.0;
 float peakY = 0.0;
 float peakZ = 0.0;
+
+float stableGravX = 0.0;
+float stableGravY = 0.0;
+float stableGravZ = 0.0;
+bool hasStableGravity = false;
 
 // =====================================================
 // SETUP
@@ -52,8 +56,8 @@ void setup()
   delay(1000);
   // external crystal
   bno.setExtCrystalUse(true);
-  // NDOF sensor fusion
-  bno.setMode((adafruit_bno055_opmode_t)0x0C);
+  // gyro + accel fusion, magnetometer is not used
+  bno.setMode(OPERATION_MODE_IMUPLUS);
   delay(100);
 
   Serial.println();
@@ -82,6 +86,53 @@ void notePeak(float &peak, float sample)
   {
     peak = sample;
   }
+}
+
+void readGravity(float &x, float &y, float &z)
+{
+  // metres per second squared
+  imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
+  x = gravity.x();
+  y = gravity.y();
+  z = gravity.z();
+}
+
+void updateStableGravity(float gyroX, float gyroY, float gyroZ)
+{
+  bool moving =
+    abs(gyroX) >= GYRO_THRESHOLD ||
+    abs(gyroY) >= GYRO_THRESHOLD ||
+    abs(gyroZ) >= GYRO_THRESHOLD;
+
+  // keep the reading from before the hand started moving
+  if (moving)
+  {
+    return;
+  }
+
+  float x;
+  float y;
+  float z;
+  readGravity(x, y, z);
+
+  if (!hasStableGravity)
+  {
+    stableGravX = x;
+    stableGravY = y;
+    stableGravZ = z;
+    hasStableGravity = true;
+    return;
+  }
+
+  stableGravX = stableGravX * 0.85 + x * 0.15;
+  stableGravY = stableGravY * 0.85 + y * 0.15;
+  stableGravZ = stableGravZ * 0.85 + z * 0.15;
+}
+
+void notifyMessage(const String &message)
+{
+  gestureCharacteristic->setValue((uint8_t *)message.c_str(), message.length());
+  gestureCharacteristic->notify();
 }
 
 void sendGyro()
@@ -136,15 +187,23 @@ void sendGyro()
     return;
   }
 
-  String message = "O,";
-  message += String(x, 1);
-  message += ",";
-  message += String(y, 1);
-  message += ",";
-  message += String(z, 1);
+  String gyroMessage = "O,";
+  gyroMessage += String(x, 1);
+  gyroMessage += ",";
+  gyroMessage += String(y, 1);
+  gyroMessage += ",";
+  gyroMessage += String(z, 1);
+  notifyMessage(gyroMessage);
 
-  gestureCharacteristic->setValue((uint8_t *)message.c_str(), message.length());
-  gestureCharacteristic->notify();
+  delay(20);
+
+  String gravityMessage = "G,";
+  gravityMessage += String(stableGravX, 1);
+  gravityMessage += ",";
+  gravityMessage += String(stableGravY, 1);
+  gravityMessage += ",";
+  gravityMessage += String(stableGravZ, 1);
+  notifyMessage(gravityMessage);
 }
 
 // =====================================================
@@ -160,6 +219,7 @@ void loop()
   notePeak(peakX, x);
   notePeak(peakY, y);
   notePeak(peakZ, z);
+  updateStableGravity(x, y, z);
 
   if (millis() - lastSend >= SEND_INTERVAL)
   {

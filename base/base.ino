@@ -38,10 +38,17 @@ bool bleConnected = false;
 volatile bool newOrientationReceived = false;
 String receivedOrientation = "";
 
+volatile bool newGravityReceived = false;
+String receivedGravity = "";
+
 float orientX = 0.0;
 float orientY = 0.0;
 float orientZ = 0.0;
 bool hasOrientation = false;
+
+float gravX = 0.0;
+float gravY = 0.0;
+float gravZ = 0.0;
 
 void turnOffGestureLEDs()
 {
@@ -110,7 +117,37 @@ void processOrientation(String data)
   digitalWrite(LED_FAN_PIN, orientY != 0.0 ? HIGH : LOW);
   digitalWrite(LED_HELP_PIN, orientZ != 0.0 ? HIGH : LOW);
 
+  Serial.print("GYRO    X:");
+  Serial.print(orientX, 1);
+  Serial.print(" Y:");
+  Serial.print(orientY, 1);
+  Serial.print(" Z:");
+  Serial.println(orientZ, 1);
+
   showNoAction();
+}
+
+void processGravity(String data)
+{
+  int first = data.indexOf(',');
+  int second = data.indexOf(',', first + 1);
+  int third = data.indexOf(',', second + 1);
+
+  if (first < 0 || second < 0 || third < 0)
+  {
+    return;
+  }
+
+  gravX = data.substring(first + 1, second).toFloat();
+  gravY = data.substring(second + 1, third).toFloat();
+  gravZ = data.substring(third + 1).toFloat();
+
+  Serial.print("GRAVITY X:");
+  Serial.print(gravX, 1);
+  Serial.print(" Y:");
+  Serial.print(gravY, 1);
+  Serial.print(" Z:");
+  Serial.println(gravZ, 1);
 }
 
 /* =========================================================
@@ -176,6 +213,15 @@ void loop()
     newOrientationReceived = false;
     interrupts();
     processOrientation(data);
+  }
+
+  if (newGravityReceived)
+  {
+    noInterrupts();
+    String data = receivedGravity;
+    newGravityReceived = false;
+    interrupts();
+    processGravity(data);
   }
 
   // BLE status
