@@ -52,6 +52,7 @@ unsigned long lastCommandMillis = 0;
 unsigned long lastLedMillis = 0;
 bool showingGesture = false;
 bool showingLed = false;
+bool showingWait = false;
 
 // defined in the proximity tab
 extern bool alertActive;
@@ -82,6 +83,7 @@ void drawBLEStatus()
 
 void showNoAction()
 {
+  showingWait = false;
   display.clearDisplay();
   drawBLEStatus();
   display.setTextSize(1);
@@ -91,8 +93,25 @@ void showNoAction()
   display.display();
 }
 
+void showWaiting()
+{
+  if (showingWait)
+  {
+    return;
+  }
+  showingWait = true;
+  display.clearDisplay();
+  drawBLEStatus();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 22);
+  display.print("WAITING");
+  display.display();
+}
+
 void showGesture()
 {
+  showingWait = false;
   display.clearDisplay();
   drawBLEStatus();
   display.setTextSize(1);

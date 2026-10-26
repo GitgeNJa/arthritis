@@ -19,6 +19,7 @@
 
 bool gestureArmed = true;
 bool gestureWindowActive = false;
+bool handInRange = false;
 unsigned long gestureWindowStart = 0;
 
 unsigned long lastUltrasonicRead = 0;
@@ -68,6 +69,7 @@ float getDistance()
 
 void showAlert()
 {
+  showingWait = false;
   display.clearDisplay();
   drawBLEStatus();
   display.setTextSize(1);
@@ -116,7 +118,7 @@ void handleGestureWindow()
   {
     gestureWindowActive = false;
     Serial.println("Gesture window expired");
-    if (!showingGesture && !alertActive)
+    if (!showingGesture && !alertActive && !handInRange)
     {
       showNoAction();
     }
@@ -125,6 +127,10 @@ void handleGestureWindow()
 
 void handleUltrasonic(float distance)
 {
+  handInRange =
+    distance >= MIN_GESTURE_DISTANCE &&
+    distance <= MAX_GESTURE_DISTANCE;
+
   if (distance >= 900.0)
   {
     if (!noEchoTiming)
@@ -189,6 +195,7 @@ void handleUltrasonic(float distance)
         validRangeSamples = 0;
         gestureWindowActive = true;
         gestureWindowStart = millis();
+        showWaiting();
         Serial.println("Gesture window OPEN");
       }
     }
@@ -206,6 +213,10 @@ void handleUltrasonic(float distance)
     {
       gestureArmed = true;
       Serial.println("GESTURE SYSTEM RE-ARMED");
+    }
+    if (showingWait && !showingGesture && !alertActive)
+    {
+      showNoAction();
     }
   }
 }
