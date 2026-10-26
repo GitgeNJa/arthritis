@@ -7,6 +7,10 @@
 // The band has the same switch. Set both the same and upload both.
 bool moreCommands = false;
 
+// false: accept every command, for debugging.
+// true: accept a command only while the right hand is over the sensor.
+bool proximity = false;
+
 /* =========================================================
    OLED
    ========================================================= */
@@ -48,6 +52,11 @@ unsigned long lastCommandMillis = 0;
 unsigned long lastLedMillis = 0;
 bool showingGesture = false;
 bool showingLed = false;
+
+// defined in the proximity tab
+extern bool alertActive;
+extern bool gestureWindowActive;
+extern bool gestureArmed;
 
 void turnOffGestureLEDs()
 {
@@ -95,6 +104,11 @@ void showGesture()
 
 void processCommand(String command)
 {
+  if (proximity && (alertActive || !gestureWindowActive))
+  {
+    return;
+  }
+
   bool ledX = false;
   bool ledY = false;
   bool ledZ = false;
@@ -166,6 +180,12 @@ void processCommand(String command)
     return;
   }
 
+  if (proximity)
+  {
+    gestureWindowActive = false;
+    gestureArmed = false;
+  }
+
   if (ledX || ledY || ledZ)
   {
     digitalWrite(LED_LIGHT_PIN, ledX ? HIGH : LOW);
@@ -214,6 +234,8 @@ void setup()
   pinMode(LED_HELP_PIN, OUTPUT);
   turnOffGestureLEDs();
 
+  setupProximity();
+
   // BLE
   NimBLEDevice::init("ARTHRITIS_RECEIVER");
 
@@ -229,6 +251,10 @@ void loop()
 {
   // BLE
   checkBluetooth();
+
+  updateUltrasonic();
+  handleGestureWindow();
+  handleAlertTimer();
 
   if (newCommandReceived)
   {
@@ -249,6 +275,7 @@ void loop()
   }
 
   if (
+    !alertActive &&
     showingGesture &&
     millis() - lastCommandMillis >= NO_ACTION_TIMEOUT
   )
