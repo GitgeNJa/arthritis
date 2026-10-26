@@ -39,6 +39,24 @@ void notifyCallback(
   }
   command.trim();
 
+  if (showValues && command.startsWith("V"))
+  {
+    valueLine = command.substring(1);
+    newValuesReceived = true;
+    return;
+  }
+
+  if (showValues)
+  {
+    int space = command.indexOf(' ');
+    if (space > 0)
+    {
+      valueLine = command.substring(space + 1);
+      command = command.substring(0, space);
+      newValuesReceived = true;
+    }
+  }
+
   if (
     command == "G1" || command == "G2" || command == "G3" ||
     command == "G4" || command == "G5" || command == "G6" ||

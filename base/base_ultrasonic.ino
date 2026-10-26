@@ -74,6 +74,7 @@ void showAlert()
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 22);
   display.print("ALERT");
+  drawValueLine();
   display.display();
 }
 

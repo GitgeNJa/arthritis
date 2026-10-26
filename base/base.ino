@@ -11,6 +11,10 @@ bool moreCommands = false;
 // true: accept a command only while the right hand is over the sensor.
 bool proximity = false;
 
+// false: gestures only. true: show gyro X Y Z and gravity Z on the last line.
+// The band has the same switch. Set both the same and upload both.
+bool showValues = false;
+
 /* =========================================================
    OLED
    ========================================================= */
@@ -52,6 +56,8 @@ unsigned long lastCommandMillis = 0;
 unsigned long lastLedMillis = 0;
 bool showingGesture = false;
 bool showingLed = false;
+String valueLine = "";
+volatile bool newValuesReceived = false;
 
 // defined in the proximity tab
 extern bool alertActive;
@@ -67,6 +73,7 @@ void turnOffGestureLEDs()
 
 void drawBLEStatus()
 {
+  display.fillRect(118, 0, 10, 8, SSD1306_BLACK);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(118, 0);
@@ -80,6 +87,19 @@ void drawBLEStatus()
   }
 }
 
+void drawValueLine()
+{
+  if (!showValues)
+  {
+    return;
+  }
+  display.fillRect(0, 44, 128, 8, SSD1306_BLACK);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 44);
+  display.print(valueLine);
+}
+
 void showNoAction()
 {
   display.clearDisplay();
@@ -88,6 +108,7 @@ void showNoAction()
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 22);
   display.print("NO ACTION");
+  drawValueLine();
   display.display();
 }
 
@@ -97,8 +118,9 @@ void showGesture()
   drawBLEStatus();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 44);
+  display.setCursor(0, 22);
   display.print(gestureLabel);
+  drawValueLine();
   display.display();
 }
 
@@ -282,6 +304,14 @@ void loop()
   {
     showingGesture = false;
     showNoAction();
+  }
+
+  if (newValuesReceived)
+  {
+    noInterrupts();
+    newValuesReceived = false;
+    interrupts();
+    drawValueLine();
   }
 
   // BLE status

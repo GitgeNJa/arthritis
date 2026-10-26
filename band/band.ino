@@ -9,13 +9,18 @@
 #define SD_PIN 8
 #define SC_PIN 9
 
+// false sends G1-G10 only. true can also send tap, push, and pull.
+// The base has the same switch. Set both the same and upload both.
+bool moreCommands = false;
+
+// false: gestures only. true: also send gyro X Y Z and gravity Z.
+// The base has the same switch. Set both the same and upload both.
+bool showValues = false;
+
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 
 BLECharacteristic *gestureCharacteristic;
 bool deviceConnected = false;
-// false sends G1-G10 only. true can also send tap, push, and pull.
-// The base has the same switch. Set both the same and upload both.
-bool moreCommands = false;
 
 #define SAMPLE_INTERVAL 20UL
 #define SEND_INTERVAL 500UL
@@ -190,11 +195,23 @@ const char *commandForLinear(float x, float y, float z)
   return nullptr;
 }
 
+int narrow(float value)
+{
+  if (value > 999.0)
+    return 999;
+  if (value < -999.0)
+    return -999;
+  return (int)value;
+}
+
 void sendGyro()
 {
   float x = peakX;
   float y = peakY;
   float z = peakZ;
+  float valueX = x;
+  float valueY = y;
+  float valueZ = z;
   peakX = 0.0;
   peakY = 0.0;
   peakZ = 0.0;
@@ -269,12 +286,49 @@ void sendGyro()
     gravityLocked = false;
   }
 
-  if (!deviceConnected || command == nullptr)
+  if (!deviceConnected)
   {
     return;
   }
 
-  gestureCharacteristic->setValue((uint8_t *)command, strlen(command));
+  if (!showValues)
+  {
+    if (command == nullptr)
+    {
+      return;
+    }
+    gestureCharacteristic->setValue((uint8_t *)command, strlen(command));
+    gestureCharacteristic->notify();
+    return;
+  }
+
+  char message[28];
+  if (command == nullptr)
+  {
+    snprintf(
+      message,
+      sizeof(message),
+      "V%4d %4d %4d %4.1f",
+      narrow(valueX),
+      narrow(valueY),
+      narrow(valueZ),
+      stableGz
+    );
+  }
+  else
+  {
+    snprintf(
+      message,
+      sizeof(message),
+      "%s %4d %4d %4d %4.1f",
+      command,
+      narrow(valueX),
+      narrow(valueY),
+      narrow(valueZ),
+      stableGz
+    );
+  }
+  gestureCharacteristic->setValue((uint8_t *)message, strlen(message));
   gestureCharacteristic->notify();
 }
 
