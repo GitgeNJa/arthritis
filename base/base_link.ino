@@ -44,6 +44,9 @@ void notifyCallback(
     (
       command == "CD" ||
       command == "CX" ||
+      command == "CM" ||
+      command.startsWith("CS") ||
+      command.startsWith("CI") ||
       (command.length() == 3 &&
         (command.startsWith("CN") || command.startsWith("CF")) &&
         command.charAt(2) >= '1' &&

@@ -3,24 +3,24 @@
 #include <Adafruit_SSD1306.h>
 #include <NimBLEDevice.h>
 
-// "false" sends G1-G10 only
-// "true" can additionally send tap, push and pull
-// The band has the same switch. Set both the same before upload
-bool moreCommands = false;
-
-// "false" accept every command, for debugging
-// "true" accept a command only while hand is over the sensor
-bool proximity = true;
-
-// "false" gestures only
-// "true" additionally sends gyro X Y Z and gravity Z, in that order
-// the band has the same switch. Set both the same before upload
-bool showValues = false;
-
 // "false" uses the fixed flip line
 // "true" after connect, 5 seconds rest then 5 seconds flip
 // the band has the same switch. Set both the same before upload
 bool calibration = true;
+
+// "false" accept every command, for debugging
+// "true" accept a command only while hand is over the sensor
+bool proximity = false;
+
+// "false" gestures only
+// "true" additionally sends gyro X Y Z and gravity Z, in that order
+// the band has the same switch. Set both the same before upload
+bool showValues = true;
+
+// "false" sends G1-G10 only
+// "true" can additionally send tap, push and pull
+// The band has the same switch. Set both the same before upload
+bool moreCommands = false;
 
 /* =========================================================
    OLED
@@ -257,6 +257,14 @@ void showCalibration(const char *line, char second)
   display.display();
 }
 
+void showCalibrationResult(const char *line, const char *detail)
+{
+  showCalibration(line, '0');
+  display.setCursor(0, 44);
+  display.print(detail);
+  display.display();
+}
+
 void processCalibration(String command)
 {
   if (command.startsWith("CN") && command.length() == 3)
@@ -267,9 +275,26 @@ void processCalibration(String command)
   {
     showCalibration("CAL: FLIP ARM", command.charAt(2));
   }
+  else if (command.startsWith("CS"))
+  {
+    String detail = "N ";
+    detail += command.substring(2);
+    detail.replace(",", " F ");
+    showCalibrationResult("CAL SUCCESS", detail.c_str());
+  }
+  else if (command.startsWith("CI"))
+  {
+    String detail = "BAD G ";
+    detail += command.substring(2);
+    showCalibrationResult("DEFAULT VALUE", detail.c_str());
+  }
+  else if (command == "CM")
+  {
+    showCalibrationResult("DEFAULT VALUE", "MOVING");
+  }
   else if (command == "CX")
   {
-    showCalibration("FLIP TOO SMALL", '0');
+    showCalibrationResult("DEFAULT VALUE", "FLIP TOO SMALL");
   }
   else if (command == "CD")
   {

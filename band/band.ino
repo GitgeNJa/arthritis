@@ -6,20 +6,20 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
-// "false" sends G1-G10 only
-// "true" can additionally send tap, push and pull
-// the base has the same switch. Set both the same before upload
-bool moreCommands = false;
-
-// "false" gestures only
-// "true" additionally sends gyro X Y Z and gravity Z, in that order
-// the base has the same switch. Set both the same before upload
-bool showValues = false;
-
 // "false" uses the fixed flip line
 // "true" after connect, 5 seconds rest then 5 seconds flip
 // the base has the same switch. Set both the same before upload
 bool calibration = true;
+
+// "false" gestures only
+// "true" additionally sends gyro X Y Z and gravity Z, in that order
+// the base has the same switch. Set both the same before upload
+bool showValues = true;
+
+// "false" sends G1-G10 only
+// "true" can additionally send tap, push and pull
+// the base has the same switch. Set both the same before upload
+bool moreCommands = false;
 
 #define SD_PIN 8
 #define SC_PIN 9
@@ -34,6 +34,7 @@ bool deviceConnected = false;
 #define GYRO_THRESHOLD 30.0
 #define GYRO_DOMINANT_MARGIN 10.0
 #define GRAVITY_FLIP_THRESHOLD 4.0
+#define GRAVITY_LIMIT 10.0
 #define CAL_HOLD_MS 5000UL
 #define CAL_SETTLE_MS 2000UL
 #define CAL_RESULT_MS 3000UL
@@ -64,6 +65,9 @@ unsigned long calStillStart = 0;
 float calSum = 0.0;
 int calCount = 0;
 int calMoveStreak = 0;
+int calMoveFails = 0;
+bool calSawInvalid = false;
+float calInvalidGz = 0.0;
 int calShownSecond = -1;
 float normalGz = 0.0;
 float flippedGz = 0.0;
@@ -96,7 +100,7 @@ void setup()
   delay(1000);
   // external crystal
   bno.setExtCrystalUse(true);
-  // gyro + accelerometer fusion. magnetometer is not used
+  // gyro + accelerometer fusion, magnetometer is not used
   bno.setMode(OPERATION_MODE_IMUPLUS);
   delay(100);
 
@@ -122,7 +126,7 @@ void readGyro(float &x, float &y, float &z)
 
 void readLinear(float &x, float &y, float &z)
 {
-  // metres per second squared, gravity removed. for extra commands
+  // metres per second squared, gravity removed
   imu::Vector<3> linear = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
   x = linear.x();
   y = linear.y();
@@ -158,7 +162,12 @@ void updateStableGravity(float gyroX, float gyroY, float gyroZ)
   imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
   float gz = gravity.z();
 
-  if (!hasStableGravity)
+  if (!gravityInRange(gz))
+  {
+    return;
+  }
+
+  if (!hasStableGravity || !gravityInRange(stableGz))
   {
     stableGz = gz;
     hasStableGravity = true;
@@ -168,13 +177,28 @@ void updateStableGravity(float gyroX, float gyroY, float gyroZ)
   stableGz = stableGz * 0.85 + gz * 0.15;
 }
 
+bool gravityInRange(float gz)
+{
+  return gz >= -GRAVITY_LIMIT && gz <= GRAVITY_LIMIT;
+}
+
 bool postureFlipped()
 {
-  if (calibration && flipEnabled && hasStableGravity && calPhase == 3)
+  if (!hasStableGravity || !gravityInRange(stableGz))
+  {
+    return false;
+  }
+  if (
+    calibration &&
+    flipEnabled &&
+    calPhase == 3 &&
+    gravityInRange(normalGz) &&
+    gravityInRange(flippedGz)
+  )
   {
     return abs(stableGz - flippedGz) < abs(stableGz - normalGz);
   }
-  return hasStableGravity && stableGz > GRAVITY_FLIP_THRESHOLD;
+  return stableGz > GRAVITY_FLIP_THRESHOLD;
 }
 
 const char *commandFor(float x, float y, float z)
@@ -383,6 +407,8 @@ void resetCalHold()
   calSum = 0.0;
   calCount = 0;
   calMoveStreak = 0;
+  calSawInvalid = false;
+  calInvalidGz = 0.0;
   calShownSecond = -1;
 }
 
@@ -395,6 +421,7 @@ void beginCalPhase(int phase)
     flipFails = 0;
     flipEnabled = false;
   }
+  calMoveFails = 0;
 }
 
 void sendCalSecond(int second)
@@ -412,6 +439,24 @@ void sendCalSecond(int second)
   notifyText(message);
 }
 
+void finishCalibrationResult(const char *message)
+{
+  gravityLocked = false;
+  peakX = 0.0;
+  peakY = 0.0;
+  peakZ = 0.0;
+  lastSend = millis();
+  calPhase = 4;
+  calStillStart = millis();
+  notifyText(message);
+}
+
+void useDefaultFlip(const char *reason)
+{
+  flipEnabled = false;
+  finishCalibrationResult(reason);
+}
+
 void finishCalHold(float average)
 {
   if (calPhase == 1)
@@ -427,10 +472,7 @@ void finishCalHold(float average)
     resetCalHold();
     if (flipFails >= 3)
     {
-      flipEnabled = false;
-      calPhase = 4;
-      calStillStart = millis();
-      notifyText("CX");
+      useDefaultFlip("CX");
     }
     return;
   }
@@ -438,14 +480,10 @@ void finishCalHold(float average)
   flippedGz = average;
   stableGz = average;
   hasStableGravity = true;
-  gravityLocked = false;
   flipEnabled = true;
-  peakX = 0.0;
-  peakY = 0.0;
-  peakZ = 0.0;
-  lastSend = millis();
-  calPhase = 3;
-  notifyText("CD");
+  char message[20];
+  snprintf(message, sizeof(message), "CS%.1f,%.1f", normalGz, flippedGz);
+  finishCalibrationResult(message);
 }
 
 void runCalibration(float gyroX, float gyroY, float gyroZ)
@@ -477,6 +515,12 @@ void runCalibration(float gyroX, float gyroY, float gyroZ)
     calMoveStreak >= CAL_MOVE_SAMPLES
   )
   {
+    calMoveFails++;
+    if (calMoveFails >= 3)
+    {
+      useDefaultFlip("CM");
+      return;
+    }
     resetCalHold();
     elapsed = 0;
   }
@@ -489,15 +533,36 @@ void runCalibration(float gyroX, float gyroY, float gyroZ)
     calCount = 0;
     elapsed = 0;
   }
-  else if (elapsed >= CAL_HOLD_MS && calCount > 0)
+  else if (elapsed >= CAL_HOLD_MS)
   {
-    finishCalHold(calSum / calCount);
+    if (calCount > 0)
+    {
+      finishCalHold(calSum / calCount);
+    }
+    else if (calSawInvalid)
+    {
+      char message[20];
+      snprintf(message, sizeof(message), "CI%.1f", calInvalidGz);
+      useDefaultFlip(message);
+    }
+    else
+    {
+      useDefaultFlip("CI?");
+    }
     return;
   }
   else if (elapsed >= CAL_SETTLE_MS)
   {
-    calSum += gz;
-    calCount++;
+    if (gravityInRange(gz))
+    {
+      calSum += gz;
+      calCount++;
+    }
+    else
+    {
+      calSawInvalid = true;
+      calInvalidGz = gz;
+    }
   }
 
   if (calPhase != 1 && calPhase != 2)
@@ -542,7 +607,6 @@ bool handleCalibration(float gyroX, float gyroY, float gyroZ)
     if (millis() - calStillStart >= CAL_RESULT_MS)
     {
       calPhase = 3;
-      flipEnabled = false;
       peakX = 0.0;
       peakY = 0.0;
       peakZ = 0.0;
