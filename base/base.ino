@@ -29,7 +29,7 @@ Adafruit_SSD1306 display(
 #define LED_FAN_PIN   26
 #define LED_HELP_PIN  27
 
-#define NO_ACTION_TIMEOUT 1000UL
+#define NO_ACTION_TIMEOUT 1500UL
 
 /* =========================================================
    COMMAND
@@ -39,9 +39,18 @@ bool bleConnected = false;
 
 volatile bool newCommandReceived = false;
 String receivedCommand = "";
+volatile bool newCalibrationReceived = false;
+String receivedCalibration = "";
 String gestureLabel = "";
 unsigned long lastCommandMillis = 0;
 bool showingGesture = false;
+volatile bool newReadingReceived = false;
+String receivedReading = "";
+String gravityLine = "";
+String gyroLine = "";
+String statusLine = "NO ACTION";
+bool calibrationCountdown = false;
+char calibrationSecond = ' ';
 
 void turnOffGestureLEDs()
 {
@@ -65,26 +74,115 @@ void drawBLEStatus()
   }
 }
 
-void showNoAction()
+int readSigned(const String &reading, int offset, int digits)
+{
+  int value = 0;
+  for (int i = 1; i <= digits; i++)
+  {
+    value = value * 10 + (reading.charAt(offset + i) - '0');
+  }
+  if (reading.charAt(offset) == '-')
+  {
+    value = -value;
+  }
+  return value;
+}
+
+void drawScreen()
 {
   display.clearDisplay();
-  drawBLEStatus();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print(gravityLine);
+  drawBLEStatus();
   display.setCursor(0, 22);
-  display.print("NO ACTION");
+  display.print(statusLine);
+  display.setCursor(0, 44);
+  if (calibrationCountdown)
+  {
+    display.print(calibrationSecond);
+  }
+  else
+  {
+    display.print(gyroLine);
+  }
   display.display();
+}
+
+void showNoAction()
+{
+  statusLine = "NO ACTION";
+  calibrationCountdown = false;
+  drawScreen();
+}
+
+void showCalibration(const char *line, char second)
+{
+  statusLine = line;
+  calibrationCountdown = (second >= '1' && second <= '5');
+  calibrationSecond = second;
+  drawScreen();
+}
+
+void processCalibration(String command)
+{
+  showingGesture = false;
+  turnOffGestureLEDs();
+
+  if (command.startsWith("CN") && command.length() == 3)
+  {
+    showCalibration("CAL: HOLD STILL", command.charAt(2));
+  }
+  else if (command.startsWith("CF") && command.length() == 3)
+  {
+    showCalibration("CAL: FLIP ARM", command.charAt(2));
+  }
+  else if (command == "CX")
+  {
+    showCalibration("FLIP TOO SMALL", '0');
+  }
+  else if (command == "CD")
+  {
+    showNoAction();
+  }
 }
 
 void showGesture()
 {
-  display.clearDisplay();
-  drawBLEStatus();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 44);
-  display.print(gestureLabel);
-  display.display();
+  statusLine = gestureLabel;
+  calibrationCountdown = false;
+  drawScreen();
+}
+
+void processReading(String reading)
+{
+  if (reading.length() != 20 || reading.charAt(0) != 'W')
+  {
+    return;
+  }
+
+  int tenths = readSigned(reading, 1, 3);
+  int mag = tenths;
+  if (mag < 0)
+  {
+    mag = -mag;
+  }
+  char grav[12];
+  snprintf(grav, sizeof(grav), "Gz %s%d.%d", tenths < 0 ? "-" : "", mag / 10, mag % 10);
+  gravityLine = grav;
+
+  if (!calibrationCountdown)
+  {
+    int gx = readSigned(reading, 5, 4);
+    int gy = readSigned(reading, 10, 4);
+    int gzz = readSigned(reading, 15, 4);
+    char gyro[24];
+    snprintf(gyro, sizeof(gyro), "x%d y%d z%d", gx, gy, gzz);
+    gyroLine = gyro;
+  }
+
+  drawScreen();
 }
 
 void processCommand(String command)
@@ -121,6 +219,26 @@ void processCommand(String command)
   else if (command == "G6")
   {
     gestureLabel = "sweep left";
+    ledZ = true;
+  }
+  else if (command == "G7")
+  {
+    gestureLabel = "flipped wave up";
+    ledX = true;
+  }
+  else if (command == "G8")
+  {
+    gestureLabel = "flipped wave down";
+    ledX = true;
+  }
+  else if (command == "G9")
+  {
+    gestureLabel = "flipped sweep right";
+    ledZ = true;
+  }
+  else if (command == "G10")
+  {
+    gestureLabel = "flipped sweep left";
     ledZ = true;
   }
   else
@@ -185,6 +303,24 @@ void loop()
 {
   // BLE
   checkBluetooth();
+
+  if (newCalibrationReceived)
+  {
+    noInterrupts();
+    String command = receivedCalibration;
+    newCalibrationReceived = false;
+    interrupts();
+    processCalibration(command);
+  }
+
+  if (newReadingReceived)
+  {
+    noInterrupts();
+    String reading = receivedReading;
+    newReadingReceived = false;
+    interrupts();
+    processReading(reading);
+  }
 
   if (newCommandReceived)
   {

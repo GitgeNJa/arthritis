@@ -39,17 +39,36 @@ void notifyCallback(
   }
   command.trim();
 
-  if (command.startsWith("O,"))
+  if (command.length() == 20 && command.charAt(0) == 'W')
   {
-    receivedOrientation = command;
-    newOrientationReceived = true;
+    receivedReading = command;
+    newReadingReceived = true;
     return;
   }
 
-  if (command.startsWith("G,"))
+  if (
+    command == "CD" ||
+    command == "CX" ||
+    (command.length() == 3 &&
+      (command.startsWith("CN") || command.startsWith("CF")) &&
+      command.charAt(2) >= '1' &&
+      command.charAt(2) <= '5')
+  )
   {
-    receivedGravity = command;
-    newGravityReceived = true;
+    receivedCalibration = command;
+    newCalibrationReceived = true;
+    return;
+  }
+
+  if (
+    command == "G1" || command == "G2" || command == "G3" ||
+    command == "G4" || command == "G5" || command == "G6" ||
+    command == "G7" || command == "G8" || command == "G9" ||
+    command == "G10"
+  )
+  {
+    receivedCommand = command;
+    newCommandReceived = true;
   }
 }
 

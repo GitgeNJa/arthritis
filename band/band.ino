@@ -17,7 +17,13 @@ bool deviceConnected = false;
 #define SAMPLE_INTERVAL 20UL
 #define SEND_INTERVAL 500UL
 #define GYRO_THRESHOLD 30.0
-#define GYRO_DOMINANT_MARGIN 20.0
+#define GYRO_DOMINANT_MARGIN 10.0
+#define CAL_HOLD_MS 5000UL
+#define CAL_SETTLE_MS 2000UL
+#define CAL_RESULT_MS 3000UL
+#define CAL_MOVE_DPS 80.0
+#define CAL_MOVE_SAMPLES 5
+#define CAL_MIN_SEPARATION 2.0
 
 unsigned long lastSend = 0;
 
@@ -25,10 +31,25 @@ float peakX = 0.0;
 float peakY = 0.0;
 float peakZ = 0.0;
 
-float stableGravX = 0.0;
-float stableGravY = 0.0;
-float stableGravZ = 0.0;
+float stableGz = 0.0;
 bool hasStableGravity = false;
+bool gravityLocked = false;
+bool handMoving = false;
+
+int calPhase = 0;
+unsigned long calStillStart = 0;
+bool calTiming = false;
+float calSum = 0.0;
+int calCount = 0;
+int calMoveStreak = 0;
+unsigned long lastCalSend = 0;
+float normalGz = 0.0;
+float flippedGz = 0.0;
+int calShownSecond = -1;
+int flipFails = 0;
+bool flipEnabled = false;
+unsigned long lastReadingSend = 0;
+const char *pendingCommand = nullptr;
 
 // =====================================================
 // SETUP
@@ -56,7 +77,7 @@ void setup()
   delay(1000);
   // external crystal
   bno.setExtCrystalUse(true);
-  // gyro + accel fusion, magnetometer is not used
+  // gyro + accelerometer fusion, magnetometer is not used
   bno.setMode(OPERATION_MODE_IMUPLUS);
   delay(100);
 
@@ -88,58 +109,305 @@ void notePeak(float &peak, float sample)
   }
 }
 
-void readGravity(float &x, float &y, float &z)
-{
-  // metres per second squared
-  imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
-  x = gravity.x();
-  y = gravity.y();
-  z = gravity.z();
-}
-
 void updateStableGravity(float gyroX, float gyroY, float gyroZ)
 {
-  bool moving =
+  handMoving =
     abs(gyroX) >= GYRO_THRESHOLD ||
     abs(gyroY) >= GYRO_THRESHOLD ||
     abs(gyroZ) >= GYRO_THRESHOLD;
 
-  // keep the reading from before the hand started moving
-  if (moving)
+  if (handMoving)
+  {
+    gravityLocked = true;
+    return;
+  }
+
+  if (gravityLocked)
   {
     return;
   }
 
-  float x;
-  float y;
-  float z;
-  readGravity(x, y, z);
+  imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
+  float gz = gravity.z();
 
   if (!hasStableGravity)
   {
-    stableGravX = x;
-    stableGravY = y;
-    stableGravZ = z;
+    stableGz = gz;
     hasStableGravity = true;
     return;
   }
 
-  stableGravX = stableGravX * 0.85 + x * 0.15;
-  stableGravY = stableGravY * 0.85 + y * 0.15;
-  stableGravZ = stableGravZ * 0.85 + z * 0.15;
+  stableGz = stableGz * 0.85 + gz * 0.15;
 }
 
-void notifyMessage(const String &message)
+void resetCalHold()
 {
-  gestureCharacteristic->setValue((uint8_t *)message.c_str(), message.length());
+  calTiming = false;
+  calSum = 0.0;
+  calCount = 0;
+  calShownSecond = -1;
+}
+
+void notifyText(const char *message)
+{
+  if (!deviceConnected || gestureCharacteristic == nullptr)
+  {
+    return;
+  }
+
+  gestureCharacteristic->setValue((uint8_t *)message, strlen(message));
   gestureCharacteristic->notify();
+}
+
+int rounded(float value)
+{
+  if (value >= 0.0)
+  {
+    return (int)(value + 0.5f);
+  }
+  return (int)(value - 0.5f);
+}
+
+void putSigned(char *dest, int value, int digits)
+{
+  int limit = 1;
+  for (int i = 0; i < digits; i++)
+  {
+    limit *= 10;
+  }
+  if (value > limit - 1)
+  {
+    value = limit - 1;
+  }
+  if (value < 1 - limit)
+  {
+    value = 1 - limit;
+  }
+  if (value < 0)
+  {
+    dest[0] = '-';
+    value = -value;
+  }
+  else
+  {
+    dest[0] = '+';
+  }
+  for (int i = digits; i >= 1; i--)
+  {
+    dest[i] = '0' + (value % 10);
+    value /= 10;
+  }
+}
+
+void sendReading(float gz, int gx, int gy, int gzz)
+{
+  char message[21];
+  message[0] = 'W';
+  putSigned(message + 1, rounded(gz * 10.0f), 3);
+  putSigned(message + 5, gx, 4);
+  putSigned(message + 10, gy, 4);
+  putSigned(message + 15, gzz, 4);
+  message[20] = '\0';
+  notifyText(message);
+}
+
+void maybeSendGravity(float gz)
+{
+  if (millis() - lastCalSend < 150)
+  {
+    return;
+  }
+  if (millis() - lastReadingSend < SEND_INTERVAL)
+  {
+    return;
+  }
+  lastReadingSend = millis();
+  sendReading(gz, 0, 0, 0);
+}
+
+float readGravityZ()
+{
+  imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
+  return gravity.z();
+}
+
+void beginCalPhase(int phase)
+{
+  calPhase = phase;
+  resetCalHold();
+  calMoveStreak = 0;
+  if (phase == 1)
+  {
+    flipFails = 0;
+    flipEnabled = false;
+  }
+}
+
+void sendCalSecond(int second)
+{
+  if (second == calShownSecond && millis() - lastCalSend < SEND_INTERVAL)
+  {
+    return;
+  }
+
+  calShownSecond = second;
+  lastCalSend = millis();
+  char message[4];
+  message[0] = 'C';
+  message[1] = (calPhase == 1) ? 'N' : 'F';
+  message[2] = '0' + second;
+  message[3] = '\0';
+  notifyText(message);
+}
+
+void finishCalHold(float average)
+{
+  if (calPhase == 1)
+  {
+    normalGz = average;
+    beginCalPhase(2);
+    return;
+  }
+
+  if (abs(average - normalGz) < CAL_MIN_SEPARATION)
+  {
+    flipFails++;
+    resetCalHold();
+    if (flipFails >= 3)
+    {
+      flipEnabled = false;
+      calPhase = 4;
+      calStillStart = millis();
+      notifyText("CX");
+    }
+    return;
+  }
+
+  flippedGz = average;
+  stableGz = average;
+  hasStableGravity = true;
+  gravityLocked = false;
+  flipEnabled = true;
+  peakX = 0.0;
+  peakY = 0.0;
+  peakZ = 0.0;
+  lastSend = millis();
+  calPhase = 3;
+  notifyText("CD");
+}
+
+void runCalibration(float gyroX, float gyroY, float gyroZ)
+{
+  bool moving =
+    abs(gyroX) >= CAL_MOVE_DPS ||
+    abs(gyroY) >= CAL_MOVE_DPS ||
+    abs(gyroZ) >= CAL_MOVE_DPS;
+  float gz = readGravityZ();
+
+  if (moving)
+  {
+    calMoveStreak++;
+  }
+  else
+  {
+    calMoveStreak = 0;
+  }
+
+  unsigned long elapsed = 0;
+  if (calTiming)
+  {
+    elapsed = millis() - calStillStart;
+  }
+
+  if (
+    calTiming &&
+    elapsed >= CAL_SETTLE_MS &&
+    calMoveStreak >= CAL_MOVE_SAMPLES
+  )
+  {
+    resetCalHold();
+  }
+
+  if (!calTiming)
+  {
+    calTiming = true;
+    calStillStart = millis();
+    calSum = 0.0;
+    calCount = 0;
+    elapsed = 0;
+  }
+  else if (elapsed >= CAL_HOLD_MS && calCount > 0)
+  {
+    finishCalHold(calSum / calCount);
+    return;
+  }
+  else if (elapsed >= CAL_SETTLE_MS)
+  {
+    calSum += gz;
+    calCount++;
+  }
+
+  if (calPhase != 1 && calPhase != 2)
+  {
+    return;
+  }
+
+  int remain = 5;
+  if (calTiming)
+  {
+    elapsed = millis() - calStillStart;
+    if (elapsed < CAL_HOLD_MS)
+    {
+      remain = 5 - (int)(elapsed / 1000UL);
+    }
+    if (remain < 1)
+    {
+      remain = 1;
+    }
+  }
+  sendCalSecond(remain);
+  maybeSendGravity(gz);
+}
+
+bool postureFlipped()
+{
+  if (!flipEnabled || !hasStableGravity || calPhase != 3)
+  {
+    return false;
+  }
+
+  float fromNormal = abs(stableGz - normalGz);
+  float fromFlipped = abs(stableGz - flippedGz);
+  return fromFlipped < fromNormal;
+}
+
+const char *commandFor(float x, float y, float z)
+{
+  bool flipped = postureFlipped();
+
+  if (x > 0.0)
+    return flipped ? "G7" : "G2";
+  if (x < 0.0)
+    return flipped ? "G8" : "G1";
+  if (y > 0.0)
+    return "G3";
+  if (y < 0.0)
+    return "G4";
+  if (z > 0.0)
+    return flipped ? "G10" : "G5";
+  if (z < 0.0)
+    return flipped ? "G9" : "G6";
+  return nullptr;
 }
 
 void sendGyro()
 {
-  float x = peakX;
-  float y = peakY;
-  float z = peakZ;
+  float rawX = peakX;
+  float rawY = peakY;
+  float rawZ = peakZ;
+  float x = rawX;
+  float y = rawY;
+  float z = rawZ;
   peakX = 0.0;
   peakY = 0.0;
   peakZ = 0.0;
@@ -182,28 +450,19 @@ void sendGyro()
     y = 0.0;
   }
 
-  if (!deviceConnected)
+  const char *command = commandFor(x, y, z);
+
+  if (!handMoving)
   {
-    return;
+    gravityLocked = false;
   }
 
-  String gyroMessage = "O,";
-  gyroMessage += String(x, 1);
-  gyroMessage += ",";
-  gyroMessage += String(y, 1);
-  gyroMessage += ",";
-  gyroMessage += String(z, 1);
-  notifyMessage(gyroMessage);
-
-  delay(20);
-
-  String gravityMessage = "G,";
-  gravityMessage += String(stableGravX, 1);
-  gravityMessage += ",";
-  gravityMessage += String(stableGravY, 1);
-  gravityMessage += ",";
-  gravityMessage += String(stableGravZ, 1);
-  notifyMessage(gravityMessage);
+  float gz = hasStableGravity ? stableGz : readGravityZ();
+  sendReading(gz, rounded(rawX), rounded(rawY), rounded(rawZ));
+  if (command != nullptr)
+  {
+    pendingCommand = command;
+  }
 }
 
 // =====================================================
@@ -216,6 +475,54 @@ void loop()
   float y;
   float z;
   readGyro(x, y, z);
+
+  if (!deviceConnected)
+  {
+    calPhase = 0;
+    resetCalHold();
+    calMoveStreak = 0;
+    flipFails = 0;
+    flipEnabled = false;
+    pendingCommand = nullptr;
+    delay(SAMPLE_INTERVAL);
+    return;
+  }
+
+  if (pendingCommand != nullptr)
+  {
+    notifyText(pendingCommand);
+    pendingCommand = nullptr;
+  }
+
+  if (calPhase == 0)
+  {
+    beginCalPhase(1);
+  }
+
+  if (calPhase == 4)
+  {
+    if (millis() - calStillStart >= CAL_RESULT_MS)
+    {
+      calPhase = 3;
+      flipEnabled = false;
+      peakX = 0.0;
+      peakY = 0.0;
+      peakZ = 0.0;
+      lastSend = millis();
+      gravityLocked = false;
+      notifyText("CD");
+    }
+    delay(SAMPLE_INTERVAL);
+    return;
+  }
+
+  if (calPhase != 3)
+  {
+    runCalibration(x, y, z);
+    delay(SAMPLE_INTERVAL);
+    return;
+  }
+
   notePeak(peakX, x);
   notePeak(peakY, y);
   notePeak(peakZ, z);
