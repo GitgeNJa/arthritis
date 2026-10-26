@@ -17,7 +17,8 @@ bool deviceConnected = false;
 #define SAMPLE_INTERVAL 20UL
 #define SEND_INTERVAL 500UL
 #define GYRO_THRESHOLD 30.0
-#define GYRO_DOMINANT_MARGIN 20.0
+#define GYRO_DOMINANT_MARGIN 10.0
+#define GRAVITY_FLIP_THRESHOLD 5.0
 
 unsigned long lastSend = 0;
 
@@ -25,10 +26,10 @@ float peakX = 0.0;
 float peakY = 0.0;
 float peakZ = 0.0;
 
-float stableGravX = 0.0;
-float stableGravY = 0.0;
-float stableGravZ = 0.0;
+float stableGz = 0.0;
 bool hasStableGravity = false;
+bool gravityLocked = false;
+bool handMoving = false;
 
 // =====================================================
 // SETUP
@@ -56,7 +57,7 @@ void setup()
   delay(1000);
   // external crystal
   bno.setExtCrystalUse(true);
-  // gyro + accel fusion, magnetometer is not used
+  // gyro + accelerometer fusion, magnetometer is not used
   bno.setMode(OPERATION_MODE_IMUPLUS);
   delay(100);
 
@@ -88,51 +89,59 @@ void notePeak(float &peak, float sample)
   }
 }
 
-void readGravity(float &x, float &y, float &z)
-{
-  // metres per second squared
-  imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
-  x = gravity.x();
-  y = gravity.y();
-  z = gravity.z();
-}
-
 void updateStableGravity(float gyroX, float gyroY, float gyroZ)
 {
-  bool moving =
+  handMoving =
     abs(gyroX) >= GYRO_THRESHOLD ||
     abs(gyroY) >= GYRO_THRESHOLD ||
     abs(gyroZ) >= GYRO_THRESHOLD;
 
-  // keep the reading from before the hand started moving
-  if (moving)
+  if (handMoving)
+  {
+    gravityLocked = true;
+    return;
+  }
+
+  if (gravityLocked)
   {
     return;
   }
 
-  float x;
-  float y;
-  float z;
-  readGravity(x, y, z);
+  imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
+  float gz = gravity.z();
 
   if (!hasStableGravity)
   {
-    stableGravX = x;
-    stableGravY = y;
-    stableGravZ = z;
+    stableGz = gz;
     hasStableGravity = true;
     return;
   }
 
-  stableGravX = stableGravX * 0.85 + x * 0.15;
-  stableGravY = stableGravY * 0.85 + y * 0.15;
-  stableGravZ = stableGravZ * 0.85 + z * 0.15;
+  stableGz = stableGz * 0.85 + gz * 0.15;
 }
 
-void notifyMessage(const String &message)
+bool postureFlipped()
 {
-  gestureCharacteristic->setValue((uint8_t *)message.c_str(), message.length());
-  gestureCharacteristic->notify();
+  return hasStableGravity && stableGz > GRAVITY_FLIP_THRESHOLD;
+}
+
+const char *commandFor(float x, float y, float z)
+{
+  bool flipped = postureFlipped();
+
+  if (x > 0.0)
+    return flipped ? "G7" : "G2";
+  if (x < 0.0)
+    return flipped ? "G8" : "G1";
+  if (y > 0.0)
+    return "G3";
+  if (y < 0.0)
+    return "G4";
+  if (z > 0.0)
+    return flipped ? "G10" : "G5";
+  if (z < 0.0)
+    return flipped ? "G9" : "G6";
+  return nullptr;
 }
 
 void sendGyro()
@@ -182,28 +191,20 @@ void sendGyro()
     y = 0.0;
   }
 
-  if (!deviceConnected)
+  const char *command = commandFor(x, y, z);
+
+  if (!handMoving)
+  {
+    gravityLocked = false;
+  }
+
+  if (!deviceConnected || command == nullptr)
   {
     return;
   }
 
-  String gyroMessage = "O,";
-  gyroMessage += String(x, 1);
-  gyroMessage += ",";
-  gyroMessage += String(y, 1);
-  gyroMessage += ",";
-  gyroMessage += String(z, 1);
-  notifyMessage(gyroMessage);
-
-  delay(20);
-
-  String gravityMessage = "G,";
-  gravityMessage += String(stableGravX, 1);
-  gravityMessage += ",";
-  gravityMessage += String(stableGravY, 1);
-  gravityMessage += ",";
-  gravityMessage += String(stableGravZ, 1);
-  notifyMessage(gravityMessage);
+  gestureCharacteristic->setValue((uint8_t *)command, strlen(command));
+  gestureCharacteristic->notify();
 }
 
 // =====================================================

@@ -29,7 +29,7 @@ Adafruit_SSD1306 display(
 #define LED_FAN_PIN   26
 #define LED_HELP_PIN  27
 
-#define NO_ACTION_TIMEOUT 1000UL
+#define NO_ACTION_TIMEOUT 1500UL
 
 /* =========================================================
    COMMAND
@@ -121,6 +121,26 @@ void processCommand(String command)
   else if (command == "G6")
   {
     gestureLabel = "sweep left";
+    ledZ = true;
+  }
+  else if (command == "G7")
+  {
+    gestureLabel = "flipped wave up";
+    ledX = true;
+  }
+  else if (command == "G8")
+  {
+    gestureLabel = "flipped wave down";
+    ledX = true;
+  }
+  else if (command == "G9")
+  {
+    gestureLabel = "flipped sweep right";
+    ledZ = true;
+  }
+  else if (command == "G10")
+  {
+    gestureLabel = "flipped sweep left";
     ledZ = true;
   }
   else
