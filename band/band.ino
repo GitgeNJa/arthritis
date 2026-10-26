@@ -13,18 +13,27 @@ Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 
 BLECharacteristic *gestureCharacteristic;
 bool deviceConnected = false;
+// false sends G1-G10 only. true can also send tap, push, and pull.
+// The base has the same switch. Set both the same and upload both.
+bool moreCommands = false;
 
 #define SAMPLE_INTERVAL 20UL
 #define SEND_INTERVAL 500UL
 #define GYRO_THRESHOLD 30.0
 #define GYRO_DOMINANT_MARGIN 10.0
 #define GRAVITY_FLIP_THRESHOLD 5.0
+#define LINEAR_THRESHOLD 4.0
+#define LINEAR_DOMINANT_MARGIN 2.0
 
 unsigned long lastSend = 0;
 
 float peakX = 0.0;
 float peakY = 0.0;
 float peakZ = 0.0;
+
+float peakLinearX = 0.0;
+float peakLinearY = 0.0;
+float peakLinearZ = 0.0;
 
 float stableGz = 0.0;
 bool hasStableGravity = false;
@@ -79,6 +88,15 @@ void readGyro(float &x, float &y, float &z)
   x = gyro.x();
   y = gyro.y();
   z = gyro.z();
+}
+
+void readLinear(float &x, float &y, float &z)
+{
+  // metres per second squared, gravity removed
+  imu::Vector<3> linear = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
+  x = linear.x();
+  y = linear.y();
+  z = linear.z();
 }
 
 void notePeak(float &peak, float sample)
@@ -144,6 +162,34 @@ const char *commandFor(float x, float y, float z)
   return nullptr;
 }
 
+const char *commandForLinear(float x, float y, float z)
+{
+  float absX = abs(x);
+  float absY = abs(y);
+  float absZ = abs(z);
+
+  float largest = max(absX, max(absY, absZ));
+  float second;
+
+  if (largest == absX)
+    second = max(absY, absZ);
+  else if (largest == absY)
+    second = max(absX, absZ);
+  else
+    second = max(absX, absY);
+
+  if (largest < LINEAR_THRESHOLD || largest - second < LINEAR_DOMINANT_MARGIN)
+    return nullptr;
+
+  if (largest == absZ)
+    return "G11";
+  if (largest == absY && y > 0.0)
+    return "G12";
+  if (largest == absY && y < 0.0)
+    return "G13";
+  return nullptr;
+}
+
 void sendGyro()
 {
   float x = peakX;
@@ -152,6 +198,13 @@ void sendGyro()
   peakX = 0.0;
   peakY = 0.0;
   peakZ = 0.0;
+
+  float linearX = peakLinearX;
+  float linearY = peakLinearY;
+  float linearZ = peakLinearZ;
+  peakLinearX = 0.0;
+  peakLinearY = 0.0;
+  peakLinearZ = 0.0;
 
   // keep only the dominant axis, others are sent as 0
   float absX = abs(x);
@@ -191,7 +244,25 @@ void sendGyro()
     y = 0.0;
   }
 
-  const char *command = commandFor(x, y, z);
+  const char *gyroCommand = commandFor(x, y, z);
+  const char *linearCommand = commandForLinear(linearX, linearY, linearZ);
+
+  float gyroScore = 0.0;
+  float linearScore = 0.0;
+  if (gyroCommand != nullptr)
+  {
+    gyroScore = max(abs(x), max(abs(y), abs(z))) / GYRO_THRESHOLD;
+  }
+  if (linearCommand != nullptr)
+  {
+    linearScore = max(abs(linearX), max(abs(linearY), abs(linearZ))) / LINEAR_THRESHOLD;
+  }
+
+  const char *command = gyroCommand;
+  if (moreCommands && linearScore > gyroScore)
+  {
+    command = linearCommand;
+  }
 
   if (!handMoving)
   {
@@ -221,6 +292,14 @@ void loop()
   notePeak(peakY, y);
   notePeak(peakZ, z);
   updateStableGravity(x, y, z);
+
+  float linearX;
+  float linearY;
+  float linearZ;
+  readLinear(linearX, linearY, linearZ);
+  notePeak(peakLinearX, linearX);
+  notePeak(peakLinearY, linearY);
+  notePeak(peakLinearZ, linearZ);
 
   if (millis() - lastSend >= SEND_INTERVAL)
   {

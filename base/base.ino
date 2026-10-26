@@ -3,6 +3,10 @@
 #include <Adafruit_SSD1306.h>
 #include <NimBLEDevice.h>
 
+// false keeps G1-G10. true also shows tap, push, and pull.
+// The band has the same switch. Set both the same and upload both.
+bool moreCommands = false;
+
 /* =========================================================
    OLED
    ========================================================= */
@@ -41,7 +45,9 @@ volatile bool newCommandReceived = false;
 String receivedCommand = "";
 String gestureLabel = "";
 unsigned long lastCommandMillis = 0;
+unsigned long lastLedMillis = 0;
 bool showingGesture = false;
+bool showingLed = false;
 
 void turnOffGestureLEDs()
 {
@@ -143,14 +149,32 @@ void processCommand(String command)
     gestureLabel = "flipped sweep left";
     ledZ = true;
   }
+  else if (moreCommands && command == "G11")
+  {
+    gestureLabel = "tap";
+  }
+  else if (moreCommands && command == "G12")
+  {
+    gestureLabel = "push";
+  }
+  else if (moreCommands && command == "G13")
+  {
+    gestureLabel = "pull";
+  }
   else
   {
     return;
   }
 
-  digitalWrite(LED_LIGHT_PIN, ledX ? HIGH : LOW);
-  digitalWrite(LED_FAN_PIN, ledY ? HIGH : LOW);
-  digitalWrite(LED_HELP_PIN, ledZ ? HIGH : LOW);
+  if (ledX || ledY || ledZ)
+  {
+    digitalWrite(LED_LIGHT_PIN, ledX ? HIGH : LOW);
+    digitalWrite(LED_FAN_PIN, ledY ? HIGH : LOW);
+    digitalWrite(LED_HELP_PIN, ledZ ? HIGH : LOW);
+    lastLedMillis = millis();
+    showingLed = true;
+  }
+
   lastCommandMillis = millis();
   showingGesture = true;
   showGesture();
@@ -216,12 +240,20 @@ void loop()
   }
 
   if (
+    showingLed &&
+    millis() - lastLedMillis >= NO_ACTION_TIMEOUT
+  )
+  {
+    showingLed = false;
+    turnOffGestureLEDs();
+  }
+
+  if (
     showingGesture &&
     millis() - lastCommandMillis >= NO_ACTION_TIMEOUT
   )
   {
     showingGesture = false;
-    turnOffGestureLEDs();
     showNoAction();
   }
 

@@ -43,7 +43,9 @@ void notifyCallback(
     command == "G1" || command == "G2" || command == "G3" ||
     command == "G4" || command == "G5" || command == "G6" ||
     command == "G7" || command == "G8" || command == "G9" ||
-    command == "G10"
+    command == "G10" ||
+    (moreCommands &&
+      (command == "G11" || command == "G12" || command == "G13"))
   )
   {
     receivedCommand = command;
