@@ -10,7 +10,7 @@ bool moreCommands = false;
 
 // "false" accept every command, for debugging
 // "true" accept a command only while hand is over the sensor
-bool proximity = false;
+bool proximity = true;
 
 // "false" gestures only
 // "true" additionally sends gyro X Y Z and gravity Z, in that order
@@ -46,7 +46,7 @@ Adafruit_SSD1306 display(
 
 #define LED_LIGHT_PIN 25
 #define LED_FAN_PIN   26
-#define LED_HELP_PIN  27
+#define LED_BULB_PIN  27
 
 #define NO_ACTION_TIMEOUT 1500UL
 
@@ -78,7 +78,7 @@ void turnOffGestureLEDs()
 {
   digitalWrite(LED_LIGHT_PIN, LOW);
   digitalWrite(LED_FAN_PIN, LOW);
-  digitalWrite(LED_HELP_PIN, LOW);
+  digitalWrite(LED_BULB_PIN, LOW);
 }
 
 void drawBLEStatus()
@@ -227,7 +227,7 @@ void processCommand(String command)
   {
     digitalWrite(LED_LIGHT_PIN, ledX ? HIGH : LOW);
     digitalWrite(LED_FAN_PIN, ledY ? HIGH : LOW);
-    digitalWrite(LED_HELP_PIN, ledZ ? HIGH : LOW);
+    digitalWrite(LED_BULB_PIN, ledZ ? HIGH : LOW);
     lastLedMillis = millis();
     showingLed = true;
   }
@@ -309,7 +309,7 @@ void setup()
   // led outputs
   pinMode(LED_LIGHT_PIN, OUTPUT);
   pinMode(LED_FAN_PIN, OUTPUT);
-  pinMode(LED_HELP_PIN, OUTPUT);
+  pinMode(LED_BULB_PIN, OUTPUT);
   turnOffGestureLEDs();
 
   setupProximity();

@@ -96,7 +96,7 @@ void setup()
   delay(1000);
   // external crystal
   bno.setExtCrystalUse(true);
-  // gyro + accelerometer fusion, magnetometer is not used
+  // gyro + accelerometer fusion. magnetometer is not used
   bno.setMode(OPERATION_MODE_IMUPLUS);
   delay(100);
 
@@ -122,7 +122,7 @@ void readGyro(float &x, float &y, float &z)
 
 void readLinear(float &x, float &y, float &z)
 {
-  // metres per second squared, gravity removed
+  // metres per second squared, gravity removed. for extra commands
   imu::Vector<3> linear = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
   x = linear.x();
   y = linear.y();

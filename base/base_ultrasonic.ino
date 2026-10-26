@@ -84,7 +84,7 @@ void startAlert()
   alertStartTime = millis();
   gestureWindowActive = false;
 
-  // leave the light, fan, and help LEDs as they are
+  // leave the light, fan and bulb LEDs as they are
   digitalWrite(LED_ALERT_PIN, HIGH);
   showAlert();
   Serial.println("ALERT TRIGGERED");
