@@ -39,6 +39,23 @@ void notifyCallback(
   }
   command.trim();
 
+  if (
+    calibration &&
+    (
+      command == "CD" ||
+      command == "CX" ||
+      (command.length() == 3 &&
+        (command.startsWith("CN") || command.startsWith("CF")) &&
+        command.charAt(2) >= '1' &&
+        command.charAt(2) <= '5')
+    )
+  )
+  {
+    receivedCalibration = command;
+    newCalibrationReceived = true;
+    return;
+  }
+
   if (showValues && command.startsWith("V"))
   {
     valueLine = command.substring(1);

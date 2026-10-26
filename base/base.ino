@@ -3,17 +3,24 @@
 #include <Adafruit_SSD1306.h>
 #include <NimBLEDevice.h>
 
-// false keeps G1-G10. true also shows tap, push, and pull.
-// The band has the same switch. Set both the same and upload both.
+// "false" sends G1-G10 only
+// "true" can additionally send tap, push and pull
+// The band has the same switch. Set both the same before upload
 bool moreCommands = false;
 
-// false: accept every command, for debugging.
-// true: accept a command only while the right hand is over the sensor.
+// "false" accept every command, for debugging
+// "true" accept a command only while hand is over the sensor
 bool proximity = false;
 
-// false: gestures only. true: show gyro X Y Z and gravity Z on the last line.
-// The band has the same switch. Set both the same and upload both.
+// "false" gestures only
+// "true" additionally sends gyro X Y Z and gravity Z, in that order
+// the band has the same switch. Set both the same before upload
 bool showValues = false;
+
+// "false" uses the fixed flip line
+// "true" after connect, 5 seconds rest then 5 seconds flip
+// the band has the same switch. Set both the same before upload
+bool calibration = true;
 
 /* =========================================================
    OLED
@@ -58,6 +65,9 @@ bool showingGesture = false;
 bool showingLed = false;
 String valueLine = "";
 volatile bool newValuesReceived = false;
+String receivedCalibration = "";
+volatile bool newCalibrationReceived = false;
+bool calibrating = false;
 
 // defined in the proximity tab
 extern bool alertActive;
@@ -126,6 +136,11 @@ void showGesture()
 
 void processCommand(String command)
 {
+  if (calibrating)
+  {
+    return;
+  }
+
   if (proximity && (alertActive || !gestureWindowActive))
   {
     return;
@@ -222,6 +237,47 @@ void processCommand(String command)
   showGesture();
 }
 
+void showCalibration(const char *line, char second)
+{
+  calibrating = true;
+  showingGesture = false;
+  showingLed = false;
+  turnOffGestureLEDs();
+  display.clearDisplay();
+  drawBLEStatus();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 22);
+  display.print(line);
+  if (second >= '1' && second <= '5')
+  {
+    display.setCursor(0, 44);
+    display.print(second);
+  }
+  display.display();
+}
+
+void processCalibration(String command)
+{
+  if (command.startsWith("CN") && command.length() == 3)
+  {
+    showCalibration("CAL: HOLD STILL", command.charAt(2));
+  }
+  else if (command.startsWith("CF") && command.length() == 3)
+  {
+    showCalibration("CAL: FLIP ARM", command.charAt(2));
+  }
+  else if (command == "CX")
+  {
+    showCalibration("FLIP TOO SMALL", '0');
+  }
+  else if (command == "CD")
+  {
+    calibrating = false;
+    showNoAction();
+  }
+}
+
 /* =========================================================
    SETUP
    ========================================================= */
@@ -277,6 +333,15 @@ void loop()
   updateUltrasonic();
   handleGestureWindow();
   handleAlertTimer();
+
+  if (newCalibrationReceived)
+  {
+    noInterrupts();
+    String calMessage = receivedCalibration;
+    newCalibrationReceived = false;
+    interrupts();
+    processCalibration(calMessage);
+  }
 
   if (newCommandReceived)
   {

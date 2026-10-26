@@ -6,16 +6,23 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
-#define SD_PIN 8
-#define SC_PIN 9
-
-// false sends G1-G10 only. true can also send tap, push, and pull.
-// The base has the same switch. Set both the same and upload both.
+// "false" sends G1-G10 only
+// "true" can additionally send tap, push and pull
+// the base has the same switch. Set both the same before upload
 bool moreCommands = false;
 
-// false: gestures only. true: also send gyro X Y Z and gravity Z.
-// The base has the same switch. Set both the same and upload both.
+// "false" gestures only
+// "true" additionally sends gyro X Y Z and gravity Z, in that order
+// the base has the same switch. Set both the same before upload
 bool showValues = false;
+
+// "false" uses the fixed flip line
+// "true" after connect, 5 seconds rest then 5 seconds flip
+// the base has the same switch. Set both the same before upload
+bool calibration = true;
+
+#define SD_PIN 8
+#define SC_PIN 9
 
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 
@@ -26,7 +33,13 @@ bool deviceConnected = false;
 #define SEND_INTERVAL 500UL
 #define GYRO_THRESHOLD 30.0
 #define GYRO_DOMINANT_MARGIN 10.0
-#define GRAVITY_FLIP_THRESHOLD 5.0
+#define GRAVITY_FLIP_THRESHOLD 4.0
+#define CAL_HOLD_MS 5000UL
+#define CAL_SETTLE_MS 2000UL
+#define CAL_RESULT_MS 3000UL
+#define CAL_MOVE_DPS 80.0
+#define CAL_MOVE_SAMPLES 5
+#define CAL_MIN_SEPARATION 2.0
 #define LINEAR_THRESHOLD 4.0
 #define LINEAR_DOMINANT_MARGIN 2.0
 
@@ -44,6 +57,18 @@ float stableGz = 0.0;
 bool hasStableGravity = false;
 bool gravityLocked = false;
 bool handMoving = false;
+
+int calPhase = 0;
+bool calTiming = false;
+unsigned long calStillStart = 0;
+float calSum = 0.0;
+int calCount = 0;
+int calMoveStreak = 0;
+int calShownSecond = -1;
+float normalGz = 0.0;
+float flippedGz = 0.0;
+int flipFails = 0;
+bool flipEnabled = false;
 
 // =====================================================
 // SETUP
@@ -145,6 +170,10 @@ void updateStableGravity(float gyroX, float gyroY, float gyroZ)
 
 bool postureFlipped()
 {
+  if (calibration && flipEnabled && hasStableGravity && calPhase == 3)
+  {
+    return abs(stableGz - flippedGz) < abs(stableGz - normalGz);
+  }
   return hasStableGravity && stableGz > GRAVITY_FLIP_THRESHOLD;
 }
 
@@ -332,6 +361,207 @@ void sendGyro()
   gestureCharacteristic->notify();
 }
 
+void notifyText(const char *message)
+{
+  if (!deviceConnected)
+  {
+    return;
+  }
+  gestureCharacteristic->setValue((uint8_t *)message, strlen(message));
+  gestureCharacteristic->notify();
+}
+
+float readGravityZ()
+{
+  imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
+  return gravity.z();
+}
+
+void resetCalHold()
+{
+  calTiming = false;
+  calSum = 0.0;
+  calCount = 0;
+  calMoveStreak = 0;
+  calShownSecond = -1;
+}
+
+void beginCalPhase(int phase)
+{
+  calPhase = phase;
+  resetCalHold();
+  if (phase == 1)
+  {
+    flipFails = 0;
+    flipEnabled = false;
+  }
+}
+
+void sendCalSecond(int second)
+{
+  if (second == calShownSecond)
+  {
+    return;
+  }
+  calShownSecond = second;
+  char message[4];
+  message[0] = 'C';
+  message[1] = (calPhase == 1) ? 'N' : 'F';
+  message[2] = '0' + second;
+  message[3] = '\0';
+  notifyText(message);
+}
+
+void finishCalHold(float average)
+{
+  if (calPhase == 1)
+  {
+    normalGz = average;
+    beginCalPhase(2);
+    return;
+  }
+
+  if (abs(average - normalGz) < CAL_MIN_SEPARATION)
+  {
+    flipFails++;
+    resetCalHold();
+    if (flipFails >= 3)
+    {
+      flipEnabled = false;
+      calPhase = 4;
+      calStillStart = millis();
+      notifyText("CX");
+    }
+    return;
+  }
+
+  flippedGz = average;
+  stableGz = average;
+  hasStableGravity = true;
+  gravityLocked = false;
+  flipEnabled = true;
+  peakX = 0.0;
+  peakY = 0.0;
+  peakZ = 0.0;
+  lastSend = millis();
+  calPhase = 3;
+  notifyText("CD");
+}
+
+void runCalibration(float gyroX, float gyroY, float gyroZ)
+{
+  bool moving =
+    abs(gyroX) >= CAL_MOVE_DPS ||
+    abs(gyroY) >= CAL_MOVE_DPS ||
+    abs(gyroZ) >= CAL_MOVE_DPS;
+  float gz = readGravityZ();
+
+  if (moving)
+  {
+    calMoveStreak++;
+  }
+  else
+  {
+    calMoveStreak = 0;
+  }
+
+  unsigned long elapsed = 0;
+  if (calTiming)
+  {
+    elapsed = millis() - calStillStart;
+  }
+
+  if (
+    calTiming &&
+    elapsed >= CAL_SETTLE_MS &&
+    calMoveStreak >= CAL_MOVE_SAMPLES
+  )
+  {
+    resetCalHold();
+    elapsed = 0;
+  }
+
+  if (!calTiming)
+  {
+    calTiming = true;
+    calStillStart = millis();
+    calSum = 0.0;
+    calCount = 0;
+    elapsed = 0;
+  }
+  else if (elapsed >= CAL_HOLD_MS && calCount > 0)
+  {
+    finishCalHold(calSum / calCount);
+    return;
+  }
+  else if (elapsed >= CAL_SETTLE_MS)
+  {
+    calSum += gz;
+    calCount++;
+  }
+
+  if (calPhase != 1 && calPhase != 2)
+  {
+    return;
+  }
+
+  int remain = 5;
+  if (calTiming)
+  {
+    elapsed = millis() - calStillStart;
+    if (elapsed < CAL_HOLD_MS)
+    {
+      remain = 5 - (int)(elapsed / 1000UL);
+    }
+    if (remain < 1)
+    {
+      remain = 1;
+    }
+  }
+  sendCalSecond(remain);
+}
+
+bool handleCalibration(float gyroX, float gyroY, float gyroZ)
+{
+  if (!deviceConnected)
+  {
+    calPhase = 0;
+    resetCalHold();
+    flipFails = 0;
+    flipEnabled = false;
+    return false;
+  }
+
+  if (calPhase == 0)
+  {
+    beginCalPhase(1);
+  }
+
+  if (calPhase == 4)
+  {
+    if (millis() - calStillStart >= CAL_RESULT_MS)
+    {
+      calPhase = 3;
+      flipEnabled = false;
+      peakX = 0.0;
+      peakY = 0.0;
+      peakZ = 0.0;
+      lastSend = millis();
+      gravityLocked = false;
+      notifyText("CD");
+    }
+    return true;
+  }
+
+  if (calPhase != 3)
+  {
+    runCalibration(gyroX, gyroY, gyroZ);
+    return true;
+  }
+
+  return false;
+}
+
 // =====================================================
 // LOOP
 // =====================================================
@@ -342,6 +572,11 @@ void loop()
   float y;
   float z;
   readGyro(x, y, z);
+  if (calibration && handleCalibration(x, y, z))
+  {
+    delay(SAMPLE_INTERVAL);
+    return;
+  }
   notePeak(peakX, x);
   notePeak(peakY, y);
   notePeak(peakZ, z);
