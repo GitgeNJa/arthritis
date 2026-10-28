@@ -3,14 +3,22 @@
 #include <Adafruit_SSD1306.h>
 #include <NimBLEDevice.h>
 
+/* =========================================================
+   Switchable Flags
+   ========================================================= */
+
+// "false" no exercise
+// "true" close hand over ultrasonic sensor for 3 seconds starts or stops the exercise
+bool exercise = true;
+
+// "false" accept every command, for debugging
+// "true" accept a command only while hand is over the ultrassonic sensor
+bool proximity = false;
+
 // "false" uses the fixed flip line
 // "true" after connect, 5 seconds rest then 5 seconds flip
 // the band has the same switch. Set both the same before upload
 bool calibration = true;
-
-// "false" accept every command, for debugging
-// "true" accept a command only while hand is over the sensor
-bool proximity = false;
 
 // "false" gestures only
 // "true" additionally sends gyro X Y Z and gravity Z, in that order
@@ -74,6 +82,9 @@ extern bool alertActive;
 extern bool gestureWindowActive;
 extern bool gestureArmed;
 
+// defined in the exercise tab
+extern bool exerciseActive;
+
 void turnOffGestureLEDs()
 {
   digitalWrite(LED_LIGHT_PIN, LOW);
@@ -83,9 +94,12 @@ void turnOffGestureLEDs()
 
 void drawBLEStatus()
 {
+  display.fillRect(0, 0, 66, 8, SSD1306_BLACK);
   display.fillRect(118, 0, 10, 8, SSD1306_BLACK);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print("2024ht01506");
   display.setCursor(118, 0);
   if (bleConnected)
   {
@@ -99,7 +113,7 @@ void drawBLEStatus()
 
 void drawValueLine()
 {
-  if (!showValues)
+  if (!showValues || exerciseActive)
   {
     return;
   }
@@ -136,12 +150,12 @@ void showGesture()
 
 void processCommand(String command)
 {
-  if (calibrating)
+  if (calibrating || alertActive || exerciseActive)
   {
     return;
   }
 
-  if (proximity && (alertActive || !gestureWindowActive))
+  if (proximity && !gestureWindowActive)
   {
     return;
   }
@@ -267,6 +281,20 @@ void showCalibrationResult(const char *line, const char *detail)
 
 void processCalibration(String command)
 {
+  if (exerciseActive)
+  {
+    cancelExercise();
+  }
+
+  if (alertActive)
+  {
+    if (command == "CD")
+    {
+      calibrating = false;
+    }
+    return;
+  }
+
   if (command.startsWith("CN") && command.length() == 3)
   {
     showCalibration("CAL: HOLD STILL", command.charAt(2));
@@ -374,10 +402,21 @@ void loop()
     String command = receivedCommand;
     newCommandReceived = false;
     interrupts();
-    processCommand(command);
+    if (exerciseActive)
+    {
+      handleExerciseCommand(command);
+    }
+    else
+    {
+      processCommand(command);
+    }
   }
 
+  handleExerciseTimer();
+
   if (
+    !alertActive &&
+    !exerciseActive &&
     showingLed &&
     millis() - lastLedMillis >= NO_ACTION_TIMEOUT
   )
@@ -388,6 +427,7 @@ void loop()
 
   if (
     !alertActive &&
+    !exerciseActive &&
     showingGesture &&
     millis() - lastCommandMillis >= NO_ACTION_TIMEOUT
   )

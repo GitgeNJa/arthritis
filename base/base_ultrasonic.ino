@@ -13,9 +13,9 @@
 #define ULTRASONIC_READ_INTERVAL 150UL
 #define REQUIRED_VALID_SAMPLES 2
 #define GESTURE_WAIT_TIME 2000UL
-#define TOO_CLOSE_ALERT_TIME 5000UL
-#define NO_ECHO_ALERT_TIME 2000UL
-#define ALERT_DISPLAY_TIME 5000UL
+#define EXERCISE_TRIGGER_TIME 3000UL
+#define CLOSE_ALERT_TIME 10000UL
+#define ALERT_DISPLAY_TIME 3000UL
 
 bool gestureArmed = true;
 bool gestureWindowActive = false;
@@ -24,20 +24,17 @@ unsigned long gestureWindowStart = 0;
 unsigned long lastUltrasonicRead = 0;
 int validRangeSamples = 0;
 
-bool tooCloseTiming = false;
-unsigned long tooCloseStartTime = 0;
-bool tooCloseAlertDone = false;
-
-bool noEchoTiming = false;
-unsigned long noEchoStartTime = 0;
-bool noEchoAlertDone = false;
+bool closeTiming = false;
+unsigned long closeStartTime = 0;
+bool closeExerciseDone = false;
+bool closeAlertDone = false;
 
 bool alertActive = false;
 unsigned long alertStartTime = 0;
 
 void setupProximity()
 {
-  if (!proximity)
+  if (!proximity && !exercise)
   {
     return;
   }
@@ -83,8 +80,11 @@ void startAlert()
   alertActive = true;
   alertStartTime = millis();
   gestureWindowActive = false;
+  showingGesture = false;
+  showingLed = false;
 
-  // leave the light, fan and bulb LEDs as they are
+  // leave the light, fan, and bulb LEDs as they are
+  stopExercise();
   digitalWrite(LED_ALERT_PIN, HIGH);
   showAlert();
   Serial.println("ALERT TRIGGERED");
@@ -92,7 +92,7 @@ void startAlert()
 
 void handleAlertTimer()
 {
-  if (!proximity || !alertActive)
+  if (!alertActive)
   {
     return;
   }
@@ -101,7 +101,10 @@ void handleAlertTimer()
   {
     alertActive = false;
     digitalWrite(LED_ALERT_PIN, LOW);
-    showNoAction();
+    if (!calibrating)
+    {
+      showNoAction();
+    }
     Serial.println("Alert finished");
   }
 }
@@ -117,7 +120,7 @@ void handleGestureWindow()
   {
     gestureWindowActive = false;
     Serial.println("Gesture window expired");
-    if (!showingGesture && !alertActive)
+    if (!showingGesture && !alertActive && !exerciseActive)
     {
       showNoAction();
     }
@@ -126,51 +129,66 @@ void handleGestureWindow()
 
 void handleUltrasonic(float distance)
 {
-  if (distance >= 900.0)
+  if (calibrating)
   {
-    if (!noEchoTiming)
+    closeTiming = false;
+    closeExerciseDone = false;
+    closeAlertDone = false;
+    return;
+  }
+
+  if (distance >= 900.0 || distance < TOO_CLOSE_DISTANCE)
+  {
+    if (!closeTiming)
     {
-      noEchoTiming = true;
-      noEchoStartTime = millis();
-      noEchoAlertDone = false;
+      closeTiming = true;
+      closeStartTime = millis();
+      closeExerciseDone = false;
+      closeAlertDone = false;
+    }
+
+    unsigned long held = millis() - closeStartTime;
+
+    if (
+      exercise &&
+      !closeExerciseDone &&
+      held >= EXERCISE_TRIGGER_TIME
+    )
+    {
+      closeExerciseDone = true;
+      if (!alertActive)
+      {
+        if (exerciseActive)
+        {
+          stopExercise();
+        }
+        else
+        {
+          startExercise();
+        }
+      }
     }
 
     if (
-      !noEchoAlertDone &&
-      millis() - noEchoStartTime >= NO_ECHO_ALERT_TIME
+      proximity &&
+      !closeAlertDone &&
+      held >= CLOSE_ALERT_TIME
     )
     {
-      noEchoAlertDone = true;
+      closeAlertDone = true;
       startAlert();
     }
     return;
   }
 
-  noEchoTiming = false;
-  noEchoAlertDone = false;
+  closeTiming = false;
+  closeExerciseDone = false;
+  closeAlertDone = false;
 
-  if (distance < TOO_CLOSE_DISTANCE)
+  if (!proximity)
   {
-    if (!tooCloseTiming)
-    {
-      tooCloseTiming = true;
-      tooCloseStartTime = millis();
-      tooCloseAlertDone = false;
-    }
-
-    if (
-      !tooCloseAlertDone &&
-      millis() - tooCloseStartTime >= TOO_CLOSE_ALERT_TIME
-    )
-    {
-      tooCloseAlertDone = true;
-      startAlert();
-    }
     return;
   }
-
-  tooCloseTiming = false;
-  tooCloseAlertDone = false;
 
   if (
     distance >= MIN_GESTURE_DISTANCE &&
@@ -181,7 +199,8 @@ void handleUltrasonic(float distance)
       gestureArmed &&
       !showingGesture &&
       !gestureWindowActive &&
-      !alertActive
+      !alertActive &&
+      !exerciseActive
     )
     {
       validRangeSamples++;
@@ -213,7 +232,7 @@ void handleUltrasonic(float distance)
 
 void updateUltrasonic()
 {
-  if (!proximity)
+  if (!proximity && !exercise)
   {
     return;
   }
