@@ -12,7 +12,7 @@
 bool exercise = true;
 
 // "false" accept every command, for debugging
-// "true" accept a command only while hand is over the ultrassonic sensor
+// "true" accept a command only while hand is over the ultrasonic sensor
 bool proximity = false;
 
 // "false" uses the fixed flip line
