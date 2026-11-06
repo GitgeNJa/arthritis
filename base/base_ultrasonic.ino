@@ -2,8 +2,6 @@
    PROXIMITY
    ========================================================= */
 
-void uploadServerEvent(const char *event, int state);
-
 #define TRIG_PIN 5
 #define ECHO_PIN 18
 #define LED_ALERT_PIN 14
@@ -89,7 +87,6 @@ void startAlert()
   stopExercise();
   digitalWrite(LED_ALERT_PIN, HIGH);
   showAlert();
-  uploadServerEvent("ALERT", 1);
   Serial.println("ALERT TRIGGERED");
 }
 

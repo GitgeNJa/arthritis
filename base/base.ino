@@ -1,34 +1,7 @@
-#include <string.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <NimBLEDevice.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
-
-/* =========================================================
-   WiFi / PHP (XAMPP on laptop)
-   Set SERVER_PHP_URL to your laptop IP and path to arthritis.php
-   Example: http://192.168.43.87/arthritis_patient/arthritis.php
-   ========================================================= */
-
-#define ENABLE_SERVER_UPLOAD true
-
-// Must match the hotspot the laptop uses (same as old_base.ino when it worked)
-const char *WIFI_SSID = "geNJaspot";
-const char *WIFI_PASSWORD = "12345677";
-
-// Laptop IPv4 on that hotspot + path where arthritis.php lives (check XAMPP htdocs)
-const char *SERVER_PHP_URL =
-  "http://192.168.1.3/arthritis_patient/arthritis.php";
-
-#define WIFI_RETRY_INTERVAL_MS 30000UL
-
-void connectWiFi();
-void ensureWiFi();
-void uploadServerEvent(const char *event, int state);
-
-static unsigned long lastWifiAttempt = 0;
 
 /* =========================================================
    Switchable Flags
@@ -39,7 +12,7 @@ static unsigned long lastWifiAttempt = 0;
 bool exercise = true;
 
 // "false" accept every command, for debugging
-// "true" accept a command only while hand is over the ultrasonic sensor
+// "true" accept a command only while hand is over the ultrassonic sensor
 bool proximity = false;
 
 // "false" uses the fixed flip line
@@ -111,107 +84,6 @@ extern bool gestureArmed;
 
 // defined in the exercise tab
 extern bool exerciseActive;
-
-void connectWiFi()
-{
-  if (!ENABLE_SERVER_UPLOAD)
-  {
-    return;
-  }
-  if (strlen(WIFI_SSID) == 0)
-  {
-    Serial.println("WiFi: set WIFI_SSID in base.ino");
-    return;
-  }
-  Serial.println("Connecting WiFi...");
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  unsigned long start = millis();
-  while (
-    WiFi.status() != WL_CONNECTED &&
-    millis() - start < 25000UL)
-  {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-  lastWifiAttempt = millis();
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    Serial.print("WiFi OK ESP IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("Gateway: ");
-    Serial.println(WiFi.gatewayIP());
-  }
-  else
-  {
-    Serial.println("WiFi failed — fix SSID/pass; uploads skipped until connected");
-  }
-}
-
-void ensureWiFi()
-{
-  if (!ENABLE_SERVER_UPLOAD || strlen(WIFI_SSID) == 0)
-  {
-    return;
-  }
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    return;
-  }
-  if (millis() - lastWifiAttempt < WIFI_RETRY_INTERVAL_MS)
-  {
-    return;
-  }
-  Serial.println("WiFi reconnecting...");
-  WiFi.disconnect();
-  delay(100);
-  connectWiFi();
-}
-
-void uploadServerEvent(const char *event, int state)
-{
-  if (!ENABLE_SERVER_UPLOAD || event == nullptr)
-  {
-    return;
-  }
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.println("upload skip: WiFi down (check Serial for WiFi OK / failed)");
-    return;
-  }
-
-  HTTPClient http;
-  String url = String(SERVER_PHP_URL);
-  url += "?event=";
-  url += event;
-  url += "&state=";
-  url += String(state);
-
-  Serial.print("HTTP GET ");
-  Serial.println(url);
-
-  http.begin(url);
-  http.setConnectTimeout(8000);
-  http.setTimeout(12000);
-  int code = http.GET();
-  if (code > 0)
-  {
-    Serial.print("HTTP ");
-    Serial.print(code);
-    Serial.print(" ");
-    Serial.println(http.getString());
-  }
-  else
-  {
-    Serial.print("HTTP fail code=");
-    Serial.print(code);
-    Serial.print(" ");
-    Serial.println(http.errorToString(code));
-  }
-  http.end();
-}
 
 void turnOffGestureLEDs()
 {
@@ -415,9 +287,6 @@ void processCommand(String command)
   lastCommandMillis = millis();
   showingGesture = true;
   showGesture();
-
-  // arthritis.php maps G1,G2,G7,G8->light; G3,G4,G9,G10->fan; G5,G6->bulb; G11-G15 + ALERT->alert
-  uploadServerEvent(command.c_str(), 1);
 }
 
 void showCalibration(const char *line, char second)
@@ -536,8 +405,6 @@ void setup()
 
   setupProximity();
 
-  connectWiFi();
-
   // BLE
   NimBLEDevice::init("ARTHRITIS_RECEIVER");
 
@@ -551,8 +418,6 @@ void setup()
 
 void loop()
 {
-  ensureWiFi();
-
   // BLE
   checkBluetooth();
 
