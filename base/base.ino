@@ -111,6 +111,36 @@ void drawBLEStatus()
   }
 }
 
+// Called from BLE disconnect: keep row 1, drop stale live values and main area
+void notifyBleDisconnected()
+{
+  valueLine = "";
+
+  if (calibrating)
+  {
+    calibrating = false;
+  }
+
+  if (alertActive)
+  {
+    showAlert();
+    return;
+  }
+
+  if (exerciseActive)
+  {
+    stopExercise();
+    return;
+  }
+
+  showingGesture = false;
+  showingLed = false;
+  turnOffGestureLEDs();
+  drawBLEStatus();
+  display.fillRect(0, 8, 128, 56, SSD1306_BLACK);
+  display.display();
+}
+
 void drawValueLine()
 {
   if (!showValues || exerciseActive)

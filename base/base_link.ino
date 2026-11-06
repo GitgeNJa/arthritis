@@ -109,7 +109,7 @@ class ClientCallbacks : public NimBLEClientCallbacks
     bleConnected = false;
     pRemoteCharacteristic = nullptr;
     Serial.println("BLE disconnected");
-    drawBLEStatus();
+    notifyBleDisconnected();
   }
 };
 
