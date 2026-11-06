@@ -26,9 +26,9 @@ bool calibration = true;
 bool showValues = true;
 
 // "false" sends G1-G10 only
-// "true" can additionally send tap, push and pull
+// "true" can additionally send G11-G15 (tap, push, pull, nudges)
 // The band has the same switch. Set both the same before upload
-bool moreCommands = false;
+bool moreCommands = true;
 
 /* =========================================================
    OLED
@@ -225,6 +225,14 @@ void processCommand(String command)
   else if (moreCommands && command == "G13")
   {
     gestureLabel = "pull";
+  }
+  else if (moreCommands && command == "G14")
+  {
+    gestureLabel = "nudge right";
+  }
+  else if (moreCommands && command == "G15")
+  {
+    gestureLabel = "nudge left";
   }
   else
   {

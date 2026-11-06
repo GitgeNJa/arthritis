@@ -17,9 +17,9 @@ bool calibration = true;
 bool showValues = true;
 
 // "false" sends G1-G10 only
-// "true" can additionally send tap, push and pull
+// "true" can additionally send G11-G15 (tap, push, pull, nudges)
 // the base has the same switch. Set both the same before upload
-bool moreCommands = false;
+bool moreCommands = true;
 
 #define SD_PIN 8
 #define SC_PIN 9
@@ -245,6 +245,10 @@ const char *commandForLinear(float x, float y, float z)
     return "G12";
   if (largest == absY && y < 0.0)
     return "G13";
+  if (largest == absX && x > 0.0)
+    return "G14";
+  if (largest == absX && x < 0.0)
+    return "G15";
   return nullptr;
 }
 
@@ -317,21 +321,10 @@ void sendGyro()
   const char *gyroCommand = commandFor(x, y, z);
   const char *linearCommand = commandForLinear(linearX, linearY, linearZ);
 
-  float gyroScore = 0.0;
-  float linearScore = 0.0;
-  if (gyroCommand != nullptr)
-  {
-    gyroScore = max(abs(x), max(abs(y), abs(z))) / GYRO_THRESHOLD;
-  }
-  if (linearCommand != nullptr)
-  {
-    linearScore = max(abs(linearX), max(abs(linearY), abs(linearZ))) / LINEAR_THRESHOLD;
-  }
-
   const char *command = gyroCommand;
-  if (moreCommands && linearScore > gyroScore)
+  if (moreCommands)
   {
-    command = linearCommand;
+    command = (linearCommand != nullptr) ? linearCommand : gyroCommand;
   }
 
   if (!handMoving)
