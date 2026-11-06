@@ -2,7 +2,8 @@
    BLE
    ========================================================= */
 
-#define REMOTE_BLE_MAC "14:63:93:C5:CE:32"
+// Pairing: connect by advertised name. If several devices share REMOTE_BLE_NAME,
+// the strongest RSSI from this scan is used (usually the nearest).
 #define REMOTE_BLE_NAME "ARTHRITIS_BAND"
 
 #define SERVICE_UUID \
@@ -152,49 +153,34 @@ bool connectToBand()
   const NimBLEAdvertisedDevice *foundDevice =
     nullptr;
 
-  // search by MAC
-  for (
-    int i = 0;
-    i < scanResults.getCount();
-    i++
-  )
-  {
-    const NimBLEAdvertisedDevice *device =
-      scanResults.getDevice(i);
-    String address =
-      device->getAddress().toString().c_str();
-    address.toUpperCase();
-    if (address == REMOTE_BLE_MAC)
-    {
-      foundDevice = device;
-      Serial.println("Found by MAC");
-      break;
-    }
-  }
+  const NimBLEAdvertisedDevice *bestNameDevice = nullptr;
+  int bestNameRssi = -32768;
 
-  // search by name
-  if (foundDevice == nullptr)
+  for (int i = 0; i < scanResults.getCount(); i++)
   {
-    for (
-      int i = 0;
-      i < scanResults.getCount();
-      i++
-    )
+    const NimBLEAdvertisedDevice *device = scanResults.getDevice(i);
+
+    if (device->haveName())
     {
-      const NimBLEAdvertisedDevice *device =
-        scanResults.getDevice(i);
-      if (device->haveName())
+      String name = device->getName().c_str();
+      if (name == REMOTE_BLE_NAME)
       {
-        String name =
-          device->getName().c_str();
-        if (name == REMOTE_BLE_NAME)
+        int rssi = device->getRSSI();
+        if (rssi > bestNameRssi)
         {
-          foundDevice = device;
-          Serial.println("Found by NAME");
-          break;
+          bestNameRssi = rssi;
+          bestNameDevice = device;
         }
       }
     }
+  }
+
+  if (bestNameDevice != nullptr)
+  {
+    foundDevice = bestNameDevice;
+    Serial.print("Found band by name (RSSI ");
+    Serial.print(bestNameRssi);
+    Serial.println(")");
   }
 
   // band not found
